@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ETCScreener</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="side">
+        <a class="brand" href="/">
+          <span>ETC</span>
+          <strong>ETCScreener</strong>
+        </a>
+        <nav>
+          <button class="active" type="button" id="navPools">Pools</button>
+          <a href="https://etc.blockscout.com/pools" target="_blank" rel="noreferrer">Source</a>
+        </nav>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <div class="search-wrap">
+            <input id="searchInput" type="search" placeholder="Search pair, DEX, or contract" />
+          </div>
+          <div class="network-strip">
+            <span id="dataStatus">Loading pools...</span>
+            <span id="etcPrice">ETC --</span>
+          </div>
+        </header>
+
+        <section class="view active" id="poolsView">
+          <div class="page-head">
+            <div>
+              <p>Ethereum Classic DEX market</p>
+              <h1>Live ETC Pools</h1>
+            </div>
+            <div class="sort-wrap">
+              <label for="sortSelect">Sort by</label>
+              <select id="sortSelect">
+                <option value="liquidity">Liquidity</option>
+                <option value="baseMarketCap">Market cap</option>
+                <option value="risk">Risk</option>
+              </select>
+            </div>
+          </div>
+
+          <section class="overview-grid" aria-label="ETC pool overview">
+            <article>
+              <span>Top liquidity</span>
+              <strong id="topLiquidity">--</strong>
+            </article>
+            <article>
+              <span>Tracked DEXes</span>
+              <strong id="dexCount">--</strong>
+            </article>
+            <article>
+              <span>Visible pools</span>
+              <strong id="visiblePoolCount">--</strong>
+            </article>
+            <article>
+              <span>Data source</span>
+              <strong>Blockscout</strong>
+            </article>
+          </section>
+
+          <div class="table-shell pool-table">
+            <div class="pool-header">
+              <span>Pair</span>
+              <span>DEX</span>
+              <span>Action</span>
+              <span>Fee</span>
+              <span>Txns</span>
+              <span>Volume</span>
+              <span>Liquidity</span>
+              <span>Market cap</span>
+              <span>Risk</span>
+            </div>
+            <div id="poolRows"></div>
+            <div class="empty" id="emptyState" hidden>No ETC pools match your search.</div>
+          </div>
+        </section>
+
+        <section class="view" id="chartView">
+          <div class="chart-shell">
+            <aside class="chart-list">
+              <button class="back" id="backToPools" type="button">Back to pools</button>
+              <div class="list-label">ETC pools</div>
+              <div id="miniRows"></div>
+            </aside>
+
+            <section class="chart-main">
+              <div class="chart-head">
+                <div>
+                  <p id="selectedDex">Select a pool</p>
+                  <h1 id="selectedPair">--</h1>
+                  <span id="selectedContract">--</span>
+                </div>
+                <div class="chart-links">
+                  <a id="openBlockscout" href="https://etc.blockscout.com/pools" target="_blank" rel="noreferrer">Blockscout</a>
+                  <a id="openGecko" href="https://www.geckoterminal.com/ethereum_classic/pools" target="_blank" rel="noreferrer">GeckoTerminal</a>
+                </div>
+              </div>
+
+              <div class="trade-grid">
+                <section>
+                  <div class="chart-toolbar">
+                    <div class="timeframes">
+                      <button class="active" data-timeframe="hour" type="button">1H</button>
+                      <button data-timeframe="day" type="button">1D</button>
+                      <button data-timeframe="minute" type="button">15M</button>
+                    </div>
+                    <span id="chartStatus">OHLCV via GeckoTerminal</span>
+                  </div>
+
+                  <div class="chart-card">
+                    <div class="chart-loading" id="chartLoading">Select a pool to load candles.</div>
+                    <div class="native-chart" id="nativeChart"></div>
+                  </div>
+                </section>
+
+                <aside class="market-panel">
+                  <div class="price-card">
+                    <span>Last close</span>
+                    <strong id="selectedPrice">--</strong>
+                    <small id="selectedChange">--</small>
+                  </div>
+                  <div class="info-list">
+                    <div><span>Liquidity</span><strong id="selectedLiquidity">--</strong></div>
+                    <div><span>Fee</span><strong id="selectedFee">--</strong></div>
+                    <div><span>Market cap</span><strong id="selectedMarketCap">--</strong></div>
+                    <div><span>Chart volume</span><strong id="selectedVolume">--</strong></div>
+                    <div><span>Risk</span><strong id="selectedRisk">--</strong></div>
+                    <div><span>Pool</span><strong id="selectedPoolAddress">--</strong></div>
+                  </div>
+                </aside>
+              </div>
+
+              <section class="activity-panel">
+                <div class="panel-title">
+                  <div>
+                    <p>Pool activity</p>
+                    <h2>Transactions</h2>
+                  </div>
+                  <span id="txStatus">Loading swaps</span>
+                </div>
+                <div class="tx-table" id="txRows"></div>
+                <div class="activity-empty" id="txEmpty">Recent swaps appear here when GeckoTerminal returns pool trades.</div>
+              </section>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>
