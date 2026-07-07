@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="ETC shard">
+  <defs>
+    <linearGradient id="shardFace" x1="18" y1="7" x2="47" y2="57" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#91ffd0" />
+      <stop offset="0.48" stop-color="#19d27f" />
+      <stop offset="1" stop-color="#07804f" />
+    </linearGradient>
+    <linearGradient id="shardEdge" x1="31" y1="6" x2="34" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#dfffee" />
+      <stop offset="1" stop-color="#0f5e40" />
+    </linearGradient>
+  </defs>
+  <path d="M32 4 12 32l20 28 20-28L32 4Z" fill="#071410" />
+  <path d="M32 7 15.5 32 32 56.5 48.5 32 32 7Z" fill="url(#shardFace)" />
+  <path d="M32 7v49.5L48.5 32 32 7Z" fill="#0da866" opacity=".88" />
+  <path d="M32 7 15.5 32H32V7Z" fill="#b9ffe2" opacity=".72" />
+  <path d="M15.5 32H32v24.5L15.5 32Z" fill="#13ba72" opacity=".86" />
+  <path d="M32 7 15.5 32 32 56.5 48.5 32 32 7Z" fill="none" stroke="url(#shardEdge)" stroke-width="2.2" />
+  <path d="M15.5 32h33M32 7v49.5" stroke="#eafff5" stroke-opacity=".35" stroke-width="1.2" />
+</svg>

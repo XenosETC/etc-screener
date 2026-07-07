@@ -8,40 +8,46 @@
   </head>
   <body>
     <div class="app">
-      <aside class="side">
-        <a class="brand" href="/">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="ETCScreener home">
           <span>ETC</span>
           <strong>ETCScreener</strong>
         </a>
-        <nav>
-          <button class="active" type="button" id="navPools">Pools</button>
-          <a href="https://etc.blockscout.com/pools" target="_blank" rel="noreferrer">Source</a>
+
+        <nav class="nav-tabs" aria-label="Primary">
+          <button class="active" type="button" id="navPools">Pairs</button>
+          <a href="https://etc.blockscout.com/pools" target="_blank" rel="noreferrer">Blockscout</a>
         </nav>
-      </aside>
+
+        <div class="search-wrap">
+          <input id="searchInput" type="search" placeholder="Search pair, DEX, or contract" />
+        </div>
+
+        <div class="network-strip">
+          <span id="dataStatus">Loading pools...</span>
+          <span id="etcPrice">ETC --</span>
+        </div>
+      </header>
 
       <main>
-        <header class="topbar">
-          <div class="search-wrap">
-            <input id="searchInput" type="search" placeholder="Search pair, DEX, or contract" />
-          </div>
-          <div class="network-strip">
-            <span id="dataStatus">Loading pools...</span>
-            <span id="etcPrice">ETC --</span>
-          </div>
-        </header>
-
         <section class="view active" id="poolsView">
           <div class="page-head">
             <div>
-              <p>Ethereum Classic DEX market</p>
-              <h1>Live ETC Pools</h1>
+              <p>Ethereum Classic pairs</p>
+              <h1>ETC Pools</h1>
+            </div>
+            <div class="market-tabs" aria-label="Pool views">
+              <button class="active" data-sort="liquidity" type="button">Top liquidity</button>
+              <button data-sort="transfers" type="button">Activity</button>
+              <button data-sort="risk" type="button">Lower risk</button>
             </div>
             <div class="sort-wrap">
-              <label for="sortSelect">Sort by</label>
+              <label for="sortSelect">Sort</label>
               <select id="sortSelect">
-                <option value="liquidity">Liquidity</option>
+                <option value="liquidity">Top liquidity</option>
+                <option value="transfers">Activity</option>
                 <option value="baseMarketCap">Market cap</option>
-                <option value="risk">Risk</option>
+                <option value="risk">Lower risk</option>
               </select>
             </div>
           </div>
@@ -60,42 +66,37 @@
               <strong id="visiblePoolCount">--</strong>
             </article>
             <article>
-              <span>Data source</span>
-              <strong>Blockscout</strong>
+              <span>Source</span>
+              <strong>Blockscout + Gecko</strong>
             </article>
           </section>
 
-          <div class="table-shell pool-table">
-            <div class="pool-header">
-              <span>Pair</span>
-              <span>DEX</span>
-              <span>Action</span>
-              <span>Fee</span>
-              <span>Txns</span>
-              <span>Volume</span>
-              <span>Liquidity</span>
-              <span>Market cap</span>
-              <span>Risk</span>
-            </div>
-            <div id="poolRows"></div>
-            <div class="empty" id="emptyState" hidden>No ETC pools match your search.</div>
-          </div>
-        </section>
+          <div class="screener-layout">
+            <section class="pairs-panel" aria-label="ETC pairs">
+              <div class="table-shell pool-table">
+                <div class="pool-header">
+                  <span>Pair</span>
+                  <span>DEX</span>
+                  <span>Fee</span>
+                  <span>Transfers</span>
+                  <span>Liquidity</span>
+                  <span>Market cap</span>
+                  <span>Risk</span>
+                </div>
+                <div id="poolRows"></div>
+                <div class="empty" id="emptyState" hidden>No ETC pools match your search.</div>
+              </div>
+            </section>
 
-        <section class="view" id="chartView">
-          <div class="chart-shell">
-            <aside class="chart-list">
-              <button class="back" id="backToPools" type="button">Back to pools</button>
-              <div class="list-label">ETC pools</div>
-              <div id="miniRows"></div>
-            </aside>
-
-            <section class="chart-main">
+            <aside class="selected-panel" aria-label="Selected pair chart">
               <div class="chart-head">
-                <div>
-                  <p id="selectedDex">Select a pool</p>
-                  <h1 id="selectedPair">--</h1>
-                  <span id="selectedContract">--</span>
+                <div class="selected-title">
+                  <span class="token-dot token-dot-lg"><img src="/etc-shard.svg" alt="" /></span>
+                  <div>
+                    <p id="selectedDex">Select a pool</p>
+                    <h2 id="selectedPair">--</h2>
+                    <span id="selectedContract">--</span>
+                  </div>
                 </div>
                 <div class="chart-links">
                   <a id="openBlockscout" href="https://etc.blockscout.com/pools" target="_blank" rel="noreferrer">Blockscout</a>
@@ -103,54 +104,106 @@
                 </div>
               </div>
 
-              <div class="trade-grid">
-                <section>
-                  <div class="chart-toolbar">
-                    <div class="timeframes">
-                      <button class="active" data-timeframe="hour" type="button">1H</button>
-                      <button data-timeframe="day" type="button">1D</button>
-                      <button data-timeframe="minute" type="button">15M</button>
-                    </div>
-                    <span id="chartStatus">OHLCV via GeckoTerminal</span>
-                  </div>
+              <section class="selected-stats" aria-label="Selected pair stats">
+                <article class="price-card">
+                  <span id="selectedPriceLabel">Last close - Token/USD</span>
+                  <strong id="selectedPrice">--</strong>
+                  <small id="selectedChange">Waiting for pair</small>
+                </article>
+                <article>
+                  <span>Liquidity</span>
+                  <strong id="selectedLiquidity">--</strong>
+                </article>
+                <article>
+                  <span>Risk</span>
+                  <strong id="selectedRisk">--</strong>
+                </article>
+              </section>
 
-                  <div class="chart-card">
-                    <div class="chart-loading" id="chartLoading">Select a pool to load candles.</div>
-                    <div class="native-chart" id="nativeChart"></div>
-                  </div>
-                </section>
+              <div class="chart-toolbar">
+                <div class="timeframes">
+                  <button data-timeframe="hour" type="button">1H</button>
+                  <button class="active" data-timeframe="day" type="button">1D</button>
+                  <button data-timeframe="minute" type="button">15M</button>
+                </div>
+                <div class="chart-modes" aria-label="Chart mode">
+                  <button class="active" data-chart-mode="usd" type="button">Token/USD</button>
+                  <button data-chart-mode="wetc" type="button">Token/WETC</button>
+                </div>
+                <span id="chartStatus">OHLCV via GeckoTerminal</span>
+              </div>
 
-                <aside class="market-panel">
-                  <div class="price-card">
-                    <span>Last close</span>
-                    <strong id="selectedPrice">--</strong>
-                    <small id="selectedChange">--</small>
-                  </div>
-                  <div class="info-list">
-                    <div><span>Liquidity</span><strong id="selectedLiquidity">--</strong></div>
-                    <div><span>Fee</span><strong id="selectedFee">--</strong></div>
-                    <div><span>Market cap</span><strong id="selectedMarketCap">--</strong></div>
-                    <div><span>Chart volume</span><strong id="selectedVolume">--</strong></div>
-                    <div><span>Risk</span><strong id="selectedRisk">--</strong></div>
-                    <div><span>Pool</span><strong id="selectedPoolAddress">--</strong></div>
-                  </div>
-                </aside>
+              <div class="chart-card">
+                <div class="chart-terminal-head">
+                  <strong id="chartOhlc">Hover chart for OHLC</strong>
+                  <span id="chartModeLabel">Token/USD</span>
+                </div>
+                <div class="chart-coverage" id="chartCoverage">Coverage --</div>
+                <div class="chart-loading" id="chartLoading">Select a pool to load candles.</div>
+                <div class="native-chart" id="nativeChart"></div>
+              </div>
+
+              <section class="pool-metrics" aria-label="Selected pool metrics">
+                <article>
+                  <span>WETC / Token</span>
+                  <strong id="selectedWetcToken">--</strong>
+                </article>
+                <article>
+                  <span>LP supplies</span>
+                  <strong id="selectedLpSupply">--</strong>
+                </article>
+                <article>
+                  <span>Liquidity</span>
+                  <strong id="selectedMetricLiquidity">--</strong>
+                </article>
+              </section>
+
+              <section class="converter-panel" aria-label="Unit converter">
+                <div class="converter-head">
+                  <span>Unit converter</span>
+                  <strong id="converterPair">--</strong>
+                </div>
+                <div class="converter-grid">
+                  <label class="converter-box">
+                    <span id="converterTokenLabel">Token</span>
+                    <input id="converterTokenInput" type="text" inputmode="decimal" autocomplete="off" value="1" />
+                  </label>
+                  <label class="converter-box">
+                    <span>USD</span>
+                    <input id="converterUsdInput" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" />
+                  </label>
+                </div>
+                <div class="converter-meta">
+                  <span id="converterRate">1 token = --</span>
+                  <span id="converterWetc">-- WETC</span>
+                </div>
+              </section>
+
+              <div class="info-list">
+                <div><span>Fee</span><strong id="selectedFee">--</strong></div>
+                <div><span>Market cap</span><strong id="selectedMarketCap">--</strong></div>
+                <div><span>Chart volume</span><strong id="selectedVolume">--</strong></div>
+                <div><span>ETC reference</span><strong id="selectedWetcUsd">--</strong></div>
+                <div><span>Blockscout transfers</span><strong id="selectedTransfers">--</strong></div>
+                <div><span>Contract status</span><strong id="selectedVerified">--</strong></div>
+                <div><span>Pool</span><strong id="selectedPoolAddress">--</strong></div>
               </div>
 
               <section class="activity-panel">
                 <div class="panel-title">
                   <div>
-                    <p>Pool activity</p>
-                    <h2>Transactions</h2>
+                    <p>Recent swaps</p>
+                    <h2>Pool tape</h2>
                   </div>
-                  <span id="txStatus">Loading swaps</span>
+                  <span id="txStatus">Waiting</span>
                 </div>
                 <div class="tx-table" id="txRows"></div>
                 <div class="activity-empty" id="txEmpty">Recent swaps appear here when GeckoTerminal returns pool trades.</div>
               </section>
-            </section>
+            </aside>
           </div>
         </section>
+
       </main>
     </div>
 
