@@ -6,6 +6,15 @@ const BLOCKSCOUT_API = "/blockscout-api/api/v2";
 const OHLCV_API = "/market-api/gecko/api/v2/networks/ethereum_classic/pools";
 const TRADES_API = "/market-api/gecko/api/v2/networks/ethereum_classic/pools";
 const POOL_DETAILS_API = "/market-api/gecko/api/v2/networks/ethereum_classic/pools/multi";
+const DEAD_LP_API = "/api/dead-lp";
+const POOL_TAPE_API = "/api/pool-tape";
+const DEAD_ADDRESS = "0x000000000000000000000000000000000000dead";
+const MIN_DISPLAY_TOKEN_AMOUNT = 0.000001;
+const TX_REFRESH_INTERVAL_MS = 45 * 1000;
+const POOL_TAPE_CACHE_VERSION = 3;
+const POOL_TAPE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const HISTORICAL_POOL_TRANSFER_PAGES = 12;
+const HISTORICAL_LP_TRANSFER_PAGES = 60;
 
 const state = {
   pools: [],
@@ -14,11 +23,17 @@ const state = {
   sort: "liquidity",
   timeframe: "day",
   chartMode: "usd",
+  txFilter: "all",
   candleRequest: 0,
+  transactionRequest: 0,
+  transactionRefreshTimer: null,
   wetcUsd: null,
   latestCloseUsd: null,
   converterTokenAmount: 1,
+  transactions: [],
   candleStore: new Map(),
+  poolTapeIndexing: new Set(),
+  deadLpChecks: new Set(),
   blockscoutCounters: new Set(),
   blockscoutAddresses: new Set(),
   poolDetails: new Set(),
@@ -39,6 +54,7 @@ const els = {
   topLiquidity: document.querySelector("#topLiquidity"),
   dexCount: document.querySelector("#dexCount"),
   visiblePoolCount: document.querySelector("#visiblePoolCount"),
+  deadLpPoolCount: document.querySelector("#deadLpPoolCount"),
   searchInput: document.querySelector("#searchInput"),
   sortSelect: document.querySelector("#sortSelect"),
   marketTabs: document.querySelector(".market-tabs"),
@@ -59,6 +75,7 @@ const els = {
   selectedLpSupply: document.querySelector("#selectedLpSupply"),
   selectedMarketCap: document.querySelector("#selectedMarketCap"),
   selectedVolume: document.querySelector("#selectedVolume"),
+  selectedVolume24h: document.querySelector("#selectedVolume24h"),
   selectedWetcUsd: document.querySelector("#selectedWetcUsd"),
   selectedTransfers: document.querySelector("#selectedTransfers"),
   selectedVerified: document.querySelector("#selectedVerified"),
@@ -79,6 +96,10 @@ const els = {
   txStatus: document.querySelector("#txStatus"),
   txRows: document.querySelector("#txRows"),
   txEmpty: document.querySelector("#txEmpty"),
+  txFilters: document.querySelector(".tx-filters"),
+  lpBurnSummary: document.querySelector("#lpBurnSummary"),
+  lpDeadBalance: document.querySelector("#lpDeadBalance"),
+  lpBurnRows: document.querySelector("#lpBurnRows"),
   timeframes: document.querySelector(".timeframes"),
   chartModes: document.querySelector(".chart-modes"),
 };
@@ -90,6 +111,16 @@ function money(value, compact = false) {
     currency: "USD",
     notation: compact ? "compact" : "standard",
     maximumFractionDigits: Number(value) < 1 ? 6 : 2,
+  }).format(Number(value));
+}
+
+function moneyZero(value, compact = false) {
+  if (!Number.isFinite(Number(value))) return "--";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: compact ? "compact" : "standard",
+    maximumFractionDigits: 2,
   }).format(Number(value));
 }
 
@@ -107,6 +138,14 @@ function decimal(value, maxFractionDigits = 8) {
     useGrouping: false,
     maximumFractionDigits: maxFractionDigits,
   });
+}
+
+function compactDecimal(value, maxFractionDigits = 8) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "";
+  const standard = decimal(numeric, maxFractionDigits);
+  if (Number(standard) !== 0 || numeric === 0) return standard;
+  return numeric.toExponential(2);
 }
 
 function readNumberInput(value) {
@@ -186,6 +225,11 @@ function mapPool(item) {
     transfers: null,
     verified: null,
     contractName: null,
+    volume24hUsd: null,
+    deadLpStatus: "unknown",
+    deadLpAmount: null,
+    deadLpSymbol: "LP",
+    deadLpLockRows: null,
   };
   pool.risk = scorePoolRisk(pool);
   return pool;
@@ -197,7 +241,7 @@ function visiblePools() {
     .filter((pool) => [pool.pair, pool.dex, pool.contract].some((value) => String(value || "").toLowerCase().includes(query)))
     .sort((a, b) => {
       if (state.sort === "baseMarketCap") return b.marketCap - a.marketCap;
-      if (state.sort === "transfers") return (b.transfers || 0) - (a.transfers || 0);
+      if (state.sort === "transfers") return (b.volume24hUsd || b.transfers || 0) - (a.volume24hUsd || a.transfers || 0);
       if (state.sort === "risk") return a.risk - b.risk;
       return b.liquidity - a.liquidity;
     });
@@ -253,6 +297,37 @@ function lpSupplyText(pool) {
     .join(" / ");
 }
 
+function volume24hText(pool) {
+  if (pool?.volume24hUsd === null || pool?.volume24hUsd === undefined) return "...";
+  return moneyZero(pool.volume24hUsd, true);
+}
+
+function deadLpText(pool) {
+  if (pool.deadLpStatus === "checking") return "Indexing";
+  if (pool.deadLpStatus === "error") return "Retry";
+  if (pool.deadLpStatus === "locked") return `${compactTokenAmount(pool.deadLpAmount)} ${pool.deadLpSymbol || "LP"}`;
+  if (pool.deadLpStatus === "none") return "None";
+  return "...";
+}
+
+function deadLpClass(pool) {
+  if (pool.deadLpStatus === "locked") return "dead-lp-locked";
+  if (pool.deadLpStatus === "none") return "dead-lp-none";
+  if (pool.deadLpStatus === "error") return "dead-lp-error";
+  return "dead-lp-checking";
+}
+
+function deadLpBadge(pool) {
+  return `<span class="dead-lp-badge ${deadLpClass(pool)}">${deadLpText(pool)}</span>`;
+}
+
+function deadLpPoolCountText(pools = visiblePools()) {
+  const checked = pools.filter((pool) => ["locked", "none", "error"].includes(pool.deadLpStatus));
+  const locked = pools.filter((pool) => pool.deadLpStatus === "locked").length;
+  if (!checked.length) return "...";
+  return `${locked}/${checked.length}`;
+}
+
 function syncConverter(source = "state") {
   const pool = selectedPool();
   const symbol = pool?.baseSymbol || "Token";
@@ -296,6 +371,7 @@ function renderPools() {
   const rows = visiblePools();
   els.emptyState.hidden = rows.length > 0;
   els.visiblePoolCount.textContent = rows.length;
+  els.deadLpPoolCount.textContent = deadLpPoolCountText(rows);
   els.poolRows.innerHTML = rows
     .map(
       (pool) => `
@@ -309,15 +385,18 @@ function renderPools() {
           </span>
           <span>${pool.dex}</span>
           <span>${pool.fee === null ? `<span class="muted">--</span>` : `${pool.fee}%`}</span>
-          <span>${pool.transfers === null ? `<span class="muted">...</span>` : compactNumber(pool.transfers)}</span>
+          <span>${volume24hText(pool)}</span>
           <span>${money(pool.liquidity, true)}</span>
           <span>${money(pool.marketCap, true)}</span>
+          <span>${deadLpBadge(pool)}</span>
           <span><span class="risk risk-${riskLabel(pool.risk).toLowerCase()}">${riskLabel(pool.risk)}</span></span>
         </a>
       `,
     )
     .join("");
+  loadPoolDetails(rows.slice(0, 50));
   loadBlockscoutCounters(rows.slice(0, 50));
+  loadDeadLpSummaries(rows.slice(0, 80));
 }
 
 function renderOverview() {
@@ -325,6 +404,7 @@ function renderOverview() {
   els.topLiquidity.textContent = top ? money(top.liquidity, true) : "--";
   els.dexCount.textContent = new Set(state.pools.map((pool) => pool.dex)).size || "--";
   els.visiblePoolCount.textContent = visiblePools().length || "--";
+  els.deadLpPoolCount.textContent = deadLpPoolCountText();
 }
 
 function showView(name) {
@@ -355,6 +435,7 @@ function routeFromHash() {
 function renderSelectedPool() {
   const pool = selectedPool();
   if (!pool) return;
+  setTxFilter("all");
   els.selectedDex.textContent = pool.dex;
   els.selectedPair.textContent = pool.pair;
   els.selectedContract.textContent = shortAddress(pool.contract);
@@ -372,6 +453,7 @@ function renderSelectedPool() {
   els.selectedLpSupply.textContent = lpSupplyText(pool);
   els.selectedMarketCap.textContent = money(pool.marketCap, true);
   els.selectedVolume.textContent = "--";
+  els.selectedVolume24h.textContent = volume24hText(pool);
   els.selectedWetcUsd.textContent = state.wetcUsd ? money(state.wetcUsd) : "--";
   els.selectedTransfers.textContent = pool.transfers === null ? "Loading" : compactNumber(pool.transfers);
   els.selectedVerified.textContent = pool.verified === null ? "Checking" : pool.verified ? "Verified" : "Unverified";
@@ -383,6 +465,7 @@ function renderSelectedPool() {
   loadPoolDetails([pool]);
   loadCandles(pool);
   loadTrades(pool);
+  startTransactionRefresh(pool.id);
 }
 
 async function fetchBlockscoutJson(path) {
@@ -434,6 +517,7 @@ function updateSelectedMetadata() {
   els.selectedWetcToken.textContent = wetcPerTokenText(pool, true);
   els.selectedLpSupply.textContent = lpSupplyText(pool);
   els.selectedMetricLiquidity.textContent = money(pool.liquidity, true);
+  els.selectedVolume24h.textContent = volume24hText(pool);
 }
 
 async function loadBlockscoutAddresses(pools) {
@@ -512,11 +596,18 @@ function hydratePoolDetails(item) {
 
   pool.basePriceUsd = Number(item.attributes?.base_token_price_usd || 0) || null;
   pool.basePriceWetc = Number(item.attributes?.base_token_price_native_currency || 0) || null;
+  pool.volume24hUsd = Number(item.attributes?.volume_usd?.h24 ?? item.attributes?.volume_usd?.["24h"]);
+  if (!Number.isFinite(pool.volume24hUsd)) pool.volume24hUsd = null;
   return true;
 }
 
 async function loadPoolDetails(pools) {
-  const targets = pools.filter((pool) => pool?.contract && !state.poolDetails.has(pool.contract) && pool.basePriceWetc === null);
+  const targets = pools.filter(
+    (pool) =>
+      pool?.contract &&
+      !state.poolDetails.has(pool.contract) &&
+      (pool.basePriceWetc === null || pool.basePriceUsd === null || pool.volume24hUsd === null),
+  );
   if (!targets.length) return;
 
   targets.forEach((pool) => state.poolDetails.add(pool.contract));
@@ -540,9 +631,57 @@ async function loadPoolDetails(pools) {
   }
 }
 
+async function loadDeadLpSummaries(pools) {
+  const targets = pools.filter(
+    (pool) =>
+      pool?.contract &&
+      pool.deadLpStatus === "unknown" &&
+      !state.deadLpChecks.has(pool.contract.toLowerCase()),
+  );
+  if (!targets.length) return;
+
+  targets.forEach((pool) => {
+    state.deadLpChecks.add(pool.contract.toLowerCase());
+    pool.deadLpStatus = "checking";
+  });
+  renderPools();
+
+  const chunks = [];
+  for (let i = 0; i < targets.length; i += 16) chunks.push(targets.slice(i, i + 16));
+
+  let changed = false;
+  for (const chunk of chunks) {
+    try {
+      const payload = await fetchDeadLpBatch(chunk);
+      (payload.results || []).forEach((result) => {
+        const pool = state.pools.find((item) => sameAddress(item.contract, result.contract));
+        if (!pool) return;
+        if (result.status === "error") {
+          pool.deadLpStatus = "error";
+          pool.deadLpAmount = null;
+          pool.deadLpLockRows = null;
+          changed = true;
+          return;
+        }
+        changed = applyDeadLpSummary(pool, apiDeadLpToSummary(result)) || changed;
+      });
+    } catch (error) {
+      chunk.forEach((pool) => {
+        pool.deadLpStatus = "error";
+        changed = true;
+      });
+      console.warn(error);
+    }
+  }
+
+  if (changed) renderPools();
+}
+
 function timeframeParams() {
   if (state.timeframe === "minute") return { unit: "minute", aggregate: 15, label: "15M", limit: 300 };
+  if (state.timeframe === "hour4") return { unit: "hour", aggregate: 4, label: "4H", limit: 1000 };
   if (state.timeframe === "day") return { unit: "day", aggregate: 1, label: "1D", limit: 1000 };
+  if (state.timeframe === "max") return { unit: "day", aggregate: 1, label: "Max", limit: 1000 };
   return { unit: "hour", aggregate: 1, label: "1H", limit: 1000 };
 }
 
@@ -570,6 +709,39 @@ function writeCachedCandles(poolId, frame, candles) {
     localStorage.setItem(candleCacheKey(poolId, frame), JSON.stringify({ savedAt: Date.now(), candles }));
   } catch {
     // Cache failures should never block the market surface.
+  }
+}
+
+function poolTapeCacheKey(pool) {
+  return `etcscreener:pool-tape:v${POOL_TAPE_CACHE_VERSION}:${pool.contract?.toLowerCase() || pool.id}`;
+}
+
+function readCachedPoolTape(pool) {
+  try {
+    const cached = JSON.parse(localStorage.getItem(poolTapeCacheKey(pool)) || "null");
+    if (!cached || Date.now() - Number(cached.savedAt || 0) > POOL_TAPE_CACHE_TTL_MS) return null;
+    if (!Array.isArray(cached.transactions)) return null;
+    return {
+      transactions: cached.transactions,
+      lpLockSummary: cached.lpLockSummary || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedPoolTape(pool, transactions, lpLockSummary) {
+  try {
+    localStorage.setItem(
+      poolTapeCacheKey(pool),
+      JSON.stringify({
+        savedAt: Date.now(),
+        transactions: transactions.slice(0, 600),
+        lpLockSummary,
+      }),
+    );
+  } catch {
+    // Historical tape cache is a speed-up, not a product dependency.
   }
 }
 
@@ -618,25 +790,25 @@ function ensureChart(frame) {
   const chart = createChart(els.nativeChart, {
     autoSize: true,
     layout: {
-      background: { type: ColorType.Solid, color: "#05080c" },
-      textColor: "#96a3b4",
+      background: { type: ColorType.Solid, color: "#070b10" },
+      textColor: "#a8b4c4",
       fontFamily: "Inter, system-ui, sans-serif",
     },
     grid: {
-      vertLines: { color: "rgba(150, 163, 180, 0.08)" },
-      horzLines: { color: "rgba(150, 163, 180, 0.12)" },
+      vertLines: { color: "rgba(125, 145, 165, 0.11)" },
+      horzLines: { color: "rgba(125, 145, 165, 0.12)" },
     },
     crosshair: {
       mode: CrosshairMode.Normal,
-      vertLine: { color: "rgba(86, 199, 255, 0.5)", labelBackgroundColor: "#13202b" },
-      horzLine: { color: "rgba(86, 199, 255, 0.5)", labelBackgroundColor: "#13202b" },
+      vertLine: { color: "rgba(50, 229, 139, 0.56)", labelBackgroundColor: "#0e1f18" },
+      horzLine: { color: "rgba(50, 229, 139, 0.56)", labelBackgroundColor: "#0e1f18" },
     },
     rightPriceScale: {
-      borderColor: "rgba(150, 163, 180, 0.18)",
+      borderColor: "rgba(125, 145, 165, 0.18)",
       scaleMargins: { top: 0.08, bottom: 0.24 },
     },
     timeScale: {
-      borderColor: "rgba(150, 163, 180, 0.18)",
+      borderColor: "rgba(125, 145, 165, 0.18)",
       timeVisible: frame.unit !== "day",
       secondsVisible: false,
       rightOffset: 8,
@@ -659,13 +831,13 @@ function ensureChart(frame) {
   });
 
   const candles = chart.addSeries(CandlestickSeries, {
-    upColor: "#19d27f",
-    downColor: "#ff5968",
-    borderUpColor: "#19d27f",
-    borderDownColor: "#ff5968",
-    wickUpColor: "#19d27f",
-    wickDownColor: "#ff5968",
-    priceLineColor: "#56c7ff",
+    upColor: "#20e28a",
+    downColor: "#ff4f5e",
+    borderUpColor: "#20e28a",
+    borderDownColor: "#ff4f5e",
+    wickUpColor: "#20e28a",
+    wickDownColor: "#ff4f5e",
+    priceLineColor: "#20e28a",
     priceLineWidth: 1,
     lastValueVisible: true,
   });
@@ -720,8 +892,68 @@ async function fetchCandles(poolId, frame) {
 }
 
 async function fetchTrades(poolId) {
-  const response = await fetch(`${TRADES_API}/${poolId}/trades?limit=20`);
+  const response = await fetch(`${TRADES_API}/${poolId}/trades?limit=100`);
   if (!response.ok) throw new Error(`GeckoTerminal returned ${response.status}`);
+  return response.json();
+}
+
+async function fetchPoolTokenTransfers(pool, maxPages = 3) {
+  const items = [];
+  let nextPageParams = null;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const query = nextPageParams ? `?${new URLSearchParams(nextPageParams).toString()}` : "";
+    const payload = await fetchBlockscoutJson(`/addresses/${pool.contract}/token-transfers${query}`);
+    items.push(...(payload.items || []));
+    if (!payload.next_page_params) break;
+    nextPageParams = payload.next_page_params;
+  }
+
+  return items;
+}
+
+async function fetchLpTokenTransfers(pool, maxPages = 25) {
+  const items = [];
+  let nextPageParams = null;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const query = nextPageParams ? `?${new URLSearchParams(nextPageParams).toString()}` : "";
+    const payload = await fetchBlockscoutJson(`/tokens/${pool.contract}/transfers${query}`);
+    items.push(...(payload.items || []));
+    if (!payload.next_page_params) break;
+    nextPageParams = payload.next_page_params;
+  }
+
+  return items;
+}
+
+async function fetchLpTokenHolders(pool, maxPages = 10) {
+  const items = [];
+  let nextPageParams = null;
+
+  for (let page = 0; page < maxPages; page += 1) {
+    const query = nextPageParams ? `?${new URLSearchParams(nextPageParams).toString()}` : "";
+    const payload = await fetchBlockscoutJson(`/tokens/${pool.contract}/holders${query}`);
+    items.push(...(payload.items || []));
+    if (!payload.next_page_params) break;
+    nextPageParams = payload.next_page_params;
+  }
+
+  return items;
+}
+
+async function fetchDeadLpBatch(pools) {
+  const contracts = pools.map((pool) => pool.contract).filter(Boolean).join(",");
+  const response = await fetch(`${DEAD_LP_API}?contracts=${encodeURIComponent(contracts)}`);
+  if (!response.ok) throw new Error(`Dead LP index returned ${response.status}`);
+  return response.json();
+}
+
+async function fetchPoolTapeIndex(pool) {
+  const response = await fetch(
+    `${POOL_TAPE_API}/${pool.contract}?poolPages=${HISTORICAL_POOL_TRANSFER_PAGES}&lpPages=${HISTORICAL_LP_TRANSFER_PAGES}&holderPages=10`,
+  );
+  if (!response.ok) throw new Error(`Pool tape index returned ${response.status}`);
   return response.json();
 }
 
@@ -825,7 +1057,7 @@ function renderCandles(candles, pool, frame, sourceLabel = "GeckoTerminal OHLCV"
   const volumeData = cleanCandles.map((candle) => ({
     time: candle.time,
     value: candle.volume,
-    color: candle.close >= candle.open ? "rgba(25, 210, 127, 0.28)" : "rgba(255, 89, 104, 0.26)",
+    color: candle.close >= candle.open ? "rgba(32, 226, 138, 0.34)" : "rgba(255, 79, 94, 0.3)",
   }));
 
   state.chart.api.applyOptions({
@@ -857,79 +1089,569 @@ function renderCandles(candles, pool, frame, sourceLabel = "GeckoTerminal OHLCV"
   els.chartModeLabel.textContent = state.chartMode === "wetc" ? "Token/WETC" : "Token/USD";
 }
 
-async function loadTrades(pool) {
-  els.txStatus.textContent = "Loading swaps";
-  els.txRows.innerHTML = "";
-  els.txEmpty.hidden = true;
+async function loadTrades(pool, options = {}) {
+  const { silent = false } = options;
+  const requestId = ++state.transactionRequest;
+  if (!silent) {
+    state.transactions = [];
+    els.txStatus.textContent = "Loading txns";
+    els.txRows.innerHTML = "";
+    els.txEmpty.hidden = true;
+    updateLpLockSummary(null);
+  } else if (state.transactions.length) {
+    els.txStatus.textContent = "Refreshing txns";
+  }
 
   try {
-    const payload = await fetchTrades(pool.id);
-    const trades = (payload.data || []).map(normalizeTrade).filter(Boolean);
-    renderTrades(trades);
+    const [tradeResult, transferResult, lpTransferResult, lpHolderResult] = await Promise.allSettled([
+      fetchTrades(pool.id),
+      fetchPoolTokenTransfers(pool),
+      fetchLpTokenTransfers(pool),
+      fetchLpTokenHolders(pool),
+    ]);
+    if (requestId !== state.transactionRequest) return;
+
+    const trades =
+      tradeResult.status === "fulfilled" ? (tradeResult.value.data || []).map((item) => normalizeGeckoTrade(item, pool)).filter(Boolean) : [];
+    const transfers = transferResult.status === "fulfilled" ? transferResult.value : [];
+    const lpTransfers = lpTransferResult.status === "fulfilled" ? lpTransferResult.value : [];
+    const lpHolders = lpHolderResult.status === "fulfilled" ? lpHolderResult.value : [];
+    const cachedTape = readCachedPoolTape(pool);
+    const liveTransactions = buildTransactions(pool, trades, transfers, lpTransfers);
+    const liveSummary = summarizeLpLocks(pool, lpTransfers, lpHolders);
+    const mergedSummary = mergeLpLockSummaries(liveSummary, cachedTape?.lpLockSummary);
+    applyDeadLpSummary(pool, mergedSummary);
+    state.transactions = mergeTransactions(liveTransactions, cachedTape?.transactions || []);
+    updateLpLockSummary(mergedSummary);
+    renderTransactions();
+    if (!silent) loadHistoricalPoolTape(pool, mergedSummary).catch(console.warn);
   } catch (error) {
-    els.txStatus.textContent = "Trades unavailable";
-    els.txEmpty.hidden = false;
-    els.txEmpty.textContent = `Swap feed unavailable: ${error.message}`;
+    if (requestId !== state.transactionRequest) return;
+    if (silent && state.transactions.length) {
+      renderTransactions();
+    } else {
+      els.txStatus.textContent = "Txns unavailable";
+      els.txEmpty.hidden = false;
+      els.txEmpty.textContent = `Transaction feed unavailable: ${error.message}`;
+    }
     console.warn(error);
   }
 }
 
-function normalizeTrade(item) {
+async function loadHistoricalPoolTape(pool, seedSummary = null) {
+  const cacheKey = poolTapeCacheKey(pool);
+  if (readCachedPoolTape(pool) || state.poolTapeIndexing.has(cacheKey)) return;
+
+  state.poolTapeIndexing.add(cacheKey);
+  try {
+    const selectedPoolId = pool.id;
+    const indexPayload = await fetchPoolTapeIndex(pool);
+    const activePool = selectedPool();
+    if (!activePool || activePool.id !== selectedPoolId) return;
+
+    const transfers = indexPayload.poolTransfers || [];
+    const lpTransfers = indexPayload.lpTransfers || [];
+    const lpHolders = indexPayload.lpHolders || [];
+    const historicalTransactions = buildTransactions(pool, [], transfers, lpTransfers);
+    const historicalSummary = mergeLpLockSummaries(summarizeLpLocks(pool, lpTransfers, lpHolders), apiDeadLpToSummary(indexPayload.deadLp));
+    writeCachedPoolTape(pool, historicalTransactions, historicalSummary);
+
+    state.transactions = mergeTransactions(state.transactions, historicalTransactions);
+    const mergedSummary = mergeLpLockSummaries(seedSummary, historicalSummary);
+    applyDeadLpSummary(pool, mergedSummary);
+    updateLpLockSummary(mergedSummary);
+    renderTransactions();
+  } finally {
+    state.poolTapeIndexing.delete(cacheKey);
+  }
+}
+
+function startTransactionRefresh(poolId) {
+  stopTransactionRefresh();
+  state.transactionRefreshTimer = window.setInterval(() => {
+    if (document.hidden) return;
+    const pool = selectedPool();
+    if (!pool || pool.id !== poolId) return;
+    loadTrades(pool, { silent: true });
+  }, TX_REFRESH_INTERVAL_MS);
+}
+
+function stopTransactionRefresh() {
+  if (!state.transactionRefreshTimer) return;
+  window.clearInterval(state.transactionRefreshTimer);
+  state.transactionRefreshTimer = null;
+}
+
+function normalizeGeckoTrade(item, pool) {
   const attrs = item.attributes || {};
   const kind = attrs.kind || attrs.trade_type || attrs.tx_type || "swap";
   const txHash = attrs.tx_hash || attrs.transaction_hash || attrs.txn_hash || attrs.hash || "";
   const volume = Number(attrs.volume_in_usd || attrs.volume_usd || attrs.amount_in_usd || attrs.usd_volume || 0);
   const price = Number(attrs.price_to_in_usd || attrs.price_from_in_usd || attrs.price_in_usd || attrs.price || 0);
   const timestamp = attrs.block_timestamp || attrs.timestamp || attrs.created_at || "";
+  const type = kind.toLowerCase().includes("sell") ? "Sell" : kind.toLowerCase().includes("buy") ? "Buy" : "Trade";
   return {
-    kind,
-    txHash,
-    volume,
-    price,
+    id: `gecko:${txHash || item.id || timestamp}`,
+    category: "swap",
+    source: "Gecko",
+    type,
+    txHash: txHash.toLowerCase(),
+    maker: attrs.maker || attrs.trader_address || attrs.tx_from_address || "",
+    tokenAmount: null,
+    tokenSymbol: primaryTokenSymbol(pool),
+    wetcAmount: null,
+    valueUsd: Number.isFinite(volume) && volume > 0 ? volume : null,
+    priceUsd: Number.isFinite(price) && price > 0 ? price : null,
+    priceWetc: null,
     timestamp,
   };
 }
 
-function renderTrades(trades) {
-  if (!trades.length) {
-    els.txStatus.textContent = "No recent swaps";
-    els.txEmpty.hidden = false;
-    els.txEmpty.textContent = "No recent swaps returned for this pool. Thin ETC pools may have sparse trade feeds.";
+function buildTransactions(pool, trades, transfers, lpTransfers = []) {
+  const tradesByHash = new Map(trades.filter((trade) => trade.txHash).map((trade) => [trade.txHash, trade]));
+  const events = normalizeTransferEvents(pool, transfers).map((event) => {
+    const trade = tradesByHash.get(event.txHash);
+    if (!trade) return event;
+    tradesByHash.delete(event.txHash);
+    return {
+      ...event,
+      source: "Gecko + Blockscout",
+      type: trade.type === "Trade" ? event.type : trade.type || event.type,
+      valueUsd: trade.valueUsd || event.valueUsd,
+      priceUsd: trade.priceUsd || event.priceUsd,
+      maker: trade.maker || event.maker,
+    };
+  });
+
+  tradesByHash.forEach((trade) => events.push(trade));
+  events.push(...normalizeDeadLpEvents(pool, lpTransfers));
+  return events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+}
+
+function normalizeTransferEvents(pool, transfers) {
+  const groups = new Map();
+
+  transfers.forEach((item) => {
+    const txHash = item.transaction_hash?.toLowerCase();
+    if (!txHash) return;
+    if (!groups.has(txHash)) {
+      groups.set(txHash, {
+        txHash,
+        timestamp: item.timestamp || "",
+        blockNumber: Number(item.block_number || 0),
+        method: item.method || "",
+        transfers: [],
+      });
+    }
+    const group = groups.get(txHash);
+    group.timestamp = group.timestamp || item.timestamp || "";
+    group.blockNumber = Math.max(group.blockNumber, Number(item.block_number || 0));
+    group.transfers.push(normalizePoolTransfer(item, pool));
+  });
+
+  return [...groups.values()].map((group) => classifyTransferGroup(group, pool)).filter(Boolean);
+}
+
+function normalizeDeadLpEvents(pool, transfers) {
+  const groups = new Map();
+
+  transfers
+    .filter((item) => isDeadWalletAddress(item.to?.hash))
+    .forEach((item) => {
+      const txHash = item.transaction_hash?.toLowerCase();
+      if (!txHash) return;
+      if (!groups.has(txHash)) {
+        groups.set(txHash, {
+          txHash,
+          timestamp: item.timestamp || "",
+          transfers: [],
+        });
+      }
+      const group = groups.get(txHash);
+      group.timestamp = group.timestamp || item.timestamp || "";
+      group.transfers.push(normalizeLpTransfer(item));
+    });
+
+  return [...groups.values()].map((group) => classifyDeadLpGroup(group, pool)).filter(Boolean);
+}
+
+function normalizePoolTransfer(item, pool) {
+  const token = item.token || {};
+  const from = item.from?.hash || "";
+  const to = item.to?.hash || "";
+  const amount = scaledTokenSupply(item.total?.value, item.total?.decimals ?? token.decimals);
+  return {
+    address: token.address_hash || "",
+    symbol: token.symbol || "TOKEN",
+    amount,
+    from,
+    to,
+    direction: sameAddress(to, pool.contract) ? "in" : sameAddress(from, pool.contract) ? "out" : "move",
+  };
+}
+
+function normalizeLpTransfer(item) {
+  const token = item.token || {};
+  return {
+    from: item.from?.hash || "",
+    to: item.to?.hash || "",
+    amount: scaledTokenSupply(item.total?.value, item.total?.decimals ?? token.decimals),
+    symbol: token.symbol || "LP",
+    method: item.method || "",
+    kind: item.type || "",
+  };
+}
+
+function summarizeLpLocks(pool, lpTransfers, lpHolders) {
+  const deadTransfers = lpTransfers
+    .filter((item) => isDeadWalletAddress(item.to?.hash))
+    .map(normalizeLpTransfer)
+    .filter((transfer) => Number(transfer.amount) >= MIN_DISPLAY_TOKEN_AMOUNT);
+  const decimals = lpTokenDecimals(lpTransfers);
+  const symbol = deadTransfers[0]?.symbol || lpTokenSymbol(lpTransfers) || "LP";
+  const deadTransferred = deadTransfers.reduce((sum, transfer) => sum + Number(transfer.amount || 0), 0);
+  const deadHolder = lpHolders.find((holder) => sameAddress(holder.address?.hash, DEAD_ADDRESS));
+  const deadBalance = deadHolder ? scaledTokenSupply(deadHolder.value, decimals) : deadTransferred;
+
+  if (!deadTransfers.length && !Number(deadBalance)) return null;
+
+  return {
+    symbol,
+    deadBalance,
+    lockRows: deadTransfers.length,
+  };
+}
+
+function mergeTransactions(...transactionLists) {
+  const byId = new Map();
+  transactionLists.flat().forEach((event) => {
+    if (!event) return;
+    const id = event.id || `${event.category}:${event.type}:${event.txHash || event.timestamp}`;
+    byId.set(id, { ...(byId.get(id) || {}), ...event, id });
+  });
+  return [...byId.values()].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+}
+
+function mergeLpLockSummaries(...summaries) {
+  const valid = summaries.filter(Boolean);
+  if (!valid.length) return null;
+  const symbol = valid.find((summary) => summary.symbol)?.symbol || "LP";
+  const deadBalance = Math.max(...valid.map((summary) => Number(summary.deadBalance) || 0));
+  const lockRows = Math.max(...valid.map((summary) => Number(summary.lockRows) || 0));
+  if (!deadBalance && !lockRows) return null;
+  return { symbol, deadBalance, lockRows };
+}
+
+function apiDeadLpToSummary(summary) {
+  if (!summary || Number(summary.deadBalance) <= 0) return null;
+  return {
+    symbol: summary.symbol || "LP",
+    deadBalance: Number(summary.deadBalance),
+    lockRows: Number(summary.lockRows || 0),
+  };
+}
+
+function applyDeadLpSummary(pool, summary) {
+  if (!pool) return false;
+  if (!summary) {
+    if (pool.deadLpStatus !== "none") {
+      pool.deadLpStatus = "none";
+      pool.deadLpAmount = 0;
+      pool.deadLpSymbol = "LP";
+      pool.deadLpLockRows = 0;
+      return true;
+    }
+    return false;
+  }
+
+  const amount = Number(summary.deadBalance) || 0;
+  const rows = Number(summary.lockRows || 0);
+  const changed =
+    pool.deadLpStatus !== "locked" ||
+    pool.deadLpAmount !== amount ||
+    pool.deadLpSymbol !== (summary.symbol || "LP") ||
+    pool.deadLpLockRows !== rows;
+
+  pool.deadLpStatus = amount > 0 || rows > 0 ? "locked" : "none";
+  pool.deadLpAmount = amount;
+  pool.deadLpSymbol = summary.symbol || "LP";
+  pool.deadLpLockRows = rows;
+  return changed;
+}
+
+function lpTokenSymbol(transfers) {
+  return transfers.find((item) => item.token?.symbol)?.token?.symbol || null;
+}
+
+function lpTokenDecimals(transfers) {
+  const decimals = Number(transfers.find((item) => item.token?.decimals !== undefined)?.token?.decimals);
+  return Number.isFinite(decimals) ? decimals : 18;
+}
+
+function updateLpLockSummary(summary) {
+  if (!summary) {
+    els.lpBurnSummary.hidden = true;
+    els.lpDeadBalance.textContent = "--";
+    els.lpBurnRows.textContent = "--";
     return;
   }
 
-  els.txStatus.textContent = `${trades.length} swaps`;
+  els.lpBurnSummary.hidden = false;
+  els.lpDeadBalance.textContent = lpAmountText(summary.deadBalance, summary.symbol);
+  els.lpBurnRows.textContent = compactNumber(summary.lockRows);
+}
+
+function lpAmountText(value, symbol) {
+  if (!Number.isFinite(Number(value)) || Number(value) === 0) return "--";
+  return `${compactTokenAmount(value)} ${symbol || "LP"}`;
+}
+
+function classifyTransferGroup(group, pool) {
+  const transfers = group.transfers.filter((transfer) => Number.isFinite(Number(transfer.amount)));
+  if (!transfers.length) return null;
+
+  const incoming = transfers.filter((transfer) => transfer.direction === "in");
+  const outgoing = transfers.filter((transfer) => transfer.direction === "out");
+  const tokenSymbol = primaryTokenSymbol(pool);
+  const tokenIn = sumTransfers(incoming, (transfer) => isPrimaryTokenTransfer(transfer, pool));
+  const tokenOut = sumTransfers(outgoing, (transfer) => isPrimaryTokenTransfer(transfer, pool));
+  const quoteIn = sumTransfers(incoming, (transfer) => isQuoteTokenTransfer(transfer, pool));
+  const quoteOut = sumTransfers(outgoing, (transfer) => isQuoteTokenTransfer(transfer, pool));
+  const wetcIn = sumTransfers(incoming, isWetcTransfer);
+  const wetcOut = sumTransfers(outgoing, isWetcTransfer);
+  const tokenAmount = Math.max(tokenIn, tokenOut);
+  const wetcAmount = Math.max(wetcIn, wetcOut);
+
+  let category = "transfer";
+  let type = "Transfer";
+  if (incoming.length && outgoing.length) {
+    if (quoteIn > 0 && tokenOut > 0) {
+      category = "swap";
+      type = "Buy";
+    } else if (tokenIn > 0 && quoteOut > 0) {
+      category = "swap";
+      type = "Sell";
+    } else {
+      return null;
+    }
+  } else if (incoming.length >= 2 && !outgoing.length) {
+    category = "liquidity";
+    type = "Add LP";
+  } else if (outgoing.length >= 2 && !incoming.length) {
+    category = "liquidity";
+    type = "Remove LP";
+  } else if (incoming.length && !outgoing.length) {
+    type = "Deposit";
+  } else if (outgoing.length && !incoming.length) {
+    type = "Withdraw";
+  }
+
+  return {
+    id: `blockscout:${group.txHash}`,
+    category,
+    source: "Blockscout",
+    type,
+    txHash: group.txHash,
+    maker: counterpartyForGroup(group, pool),
+    tokenAmount: tokenAmount > 0 ? tokenAmount : null,
+    tokenSymbol,
+    wetcAmount: wetcAmount > 0 ? wetcAmount : null,
+    valueUsd: estimateTransferUsd(pool, tokenAmount, wetcAmount),
+    priceUsd: null,
+    priceWetc: tokenAmount > 0 && wetcAmount > 0 ? wetcAmount / tokenAmount : null,
+    timestamp: group.timestamp,
+  };
+}
+
+function classifyDeadLpGroup(group) {
+  const transfers = group.transfers.filter((transfer) => Number(transfer.amount) >= MIN_DISPLAY_TOKEN_AMOUNT);
+  if (!transfers.length) return null;
+  const amount = transfers.reduce((sum, transfer) => sum + Number(transfer.amount || 0), 0);
+  const first = transfers[0];
+
+  return {
+    id: `lp-lock:${group.txHash}`,
+    category: "burn",
+    source: "LP sent dead",
+    type: "LP Lock",
+    txHash: group.txHash,
+    maker: first.from,
+    tokenAmount: amount > 0 ? amount : null,
+    tokenSymbol: first.symbol,
+    wetcAmount: null,
+    valueUsd: null,
+    priceUsd: null,
+    priceWetc: null,
+    target: "Dead wallet",
+    timestamp: group.timestamp,
+  };
+}
+
+function primaryTokenSymbol(pool) {
+  return pool.baseSymbol?.toUpperCase() === "WETC" && pool.quoteSymbol ? pool.quoteSymbol : pool.baseSymbol;
+}
+
+function primaryTokenAddress(pool) {
+  return pool.baseSymbol?.toUpperCase() === "WETC" && pool.quoteAddress ? pool.quoteAddress : pool.baseAddress;
+}
+
+function quoteTokenSymbol(pool) {
+  return pool.baseSymbol?.toUpperCase() === "WETC" && pool.quoteSymbol ? pool.baseSymbol : pool.quoteSymbol;
+}
+
+function quoteTokenAddress(pool) {
+  return pool.baseSymbol?.toUpperCase() === "WETC" && pool.baseAddress ? pool.baseAddress : pool.quoteAddress;
+}
+
+function sameAddress(a, b) {
+  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
+}
+
+function isDeadWalletAddress(address) {
+  return sameAddress(address, DEAD_ADDRESS);
+}
+
+function isPrimaryTokenTransfer(transfer, pool) {
+  return sameAddress(transfer.address, primaryTokenAddress(pool)) || transfer.symbol?.toUpperCase() === primaryTokenSymbol(pool)?.toUpperCase();
+}
+
+function isQuoteTokenTransfer(transfer, pool) {
+  return sameAddress(transfer.address, quoteTokenAddress(pool)) || transfer.symbol?.toUpperCase() === quoteTokenSymbol(pool)?.toUpperCase();
+}
+
+function isWetcTransfer(transfer) {
+  return transfer.symbol?.toUpperCase() === "WETC";
+}
+
+function sumTransfers(transfers, predicate) {
+  return transfers.filter(predicate).reduce((sum, transfer) => sum + Number(transfer.amount || 0), 0);
+}
+
+function counterpartyForGroup(group, pool) {
+  const incoming = group.transfers.find((transfer) => transfer.direction === "in" && !sameAddress(transfer.from, pool.contract));
+  const outgoing = group.transfers.find((transfer) => transfer.direction === "out" && !sameAddress(transfer.to, pool.contract));
+  return incoming?.from || outgoing?.to || "";
+}
+
+function estimateTransferUsd(pool, tokenAmount, wetcAmount) {
+  if (wetcAmount > 0 && Number(state.wetcUsd) > 0) return wetcAmount * Number(state.wetcUsd);
+  if (tokenAmount > 0 && Number(pool.basePriceUsd) > 0 && primaryTokenSymbol(pool)?.toUpperCase() === pool.baseSymbol?.toUpperCase()) {
+    return tokenAmount * Number(pool.basePriceUsd);
+  }
+  return null;
+}
+
+function renderTransactions() {
+  const events = state.transactions || [];
+  const matching = state.txFilter === "all" ? events : events.filter((event) => event.category === state.txFilter);
+  const rowLimit = state.txFilter === "all" ? 120 : 250;
+  const visible = matching.slice(0, rowLimit);
+
+  if (!matching.length) {
+    els.txStatus.textContent = events.length ? `${events.length} txns` : "No txns";
+    els.txRows.innerHTML = "";
+    els.txEmpty.hidden = false;
+    els.txEmpty.textContent = events.length
+      ? `No ${state.txFilter} transactions in the current feed.`
+      : "No recent pool transactions returned yet.";
+    return;
+  }
+
+  els.txStatus.textContent =
+    state.txFilter === "all"
+      ? visible.length < events.length
+        ? `${visible.length}/${events.length} txns`
+        : `${events.length} txns`
+      : visible.length < matching.length
+        ? `${visible.length}/${matching.length} txns`
+        : `${matching.length}/${events.length} txns`;
   els.txEmpty.hidden = true;
+  const isDeadLpView = state.txFilter === "burn";
+  const headers = isDeadLpView
+    ? ["Type", "Value", "LP amount", "Destination", "Event", "From", "Time", "Tx"]
+    : ["Type", "USD", "Token", "WETC", "Price / Target", "Maker", "Time", "Tx"];
   els.txRows.innerHTML = `
     <div class="tx-head">
-      <span>Type</span>
-      <span>Value</span>
-      <span>Price</span>
-      <span>Time</span>
-      <span>Tx</span>
+      ${headers.map((header) => `<span>${header}</span>`).join("")}
     </div>
-    ${trades
-      .map((trade) => {
-        const type = trade.kind.toLowerCase().includes("sell") ? "Sell" : trade.kind.toLowerCase().includes("buy") ? "Buy" : "Swap";
-        return `
-          <a class="tx-row" href="${trade.txHash ? `${BLOCKSCOUT_BASE}/tx/${trade.txHash}` : "#"}" target="_blank" rel="noreferrer">
-            <span class="${type === "Sell" ? "negative" : "positive"}">${type}</span>
-            <span>${money(trade.volume, true)}</span>
-            <span>${money(trade.price)}</span>
-            <span>${formatTime(trade.timestamp)}</span>
-            <span>${trade.txHash ? shortAddress(trade.txHash) : "--"}</span>
-          </a>
-        `;
-      })
-      .join("")}
+    ${visible.map((event) => renderTransactionRow(event, isDeadLpView)).join("")}
   `;
 }
 
-function formatTime(timestamp) {
+function setTxFilter(filter, shouldRender = false) {
+  state.txFilter = filter;
+  els.txFilters
+    .querySelectorAll("[data-tx-filter]")
+    .forEach((tab) => tab.classList.toggle("active", tab.dataset.txFilter === state.txFilter));
+  if (shouldRender) renderTransactions();
+}
+
+function renderTransactionRow(event, isDeadLpView = false) {
+  const href = event.txHash ? `${BLOCKSCOUT_BASE}/tx/${event.txHash}` : "#";
+  const valueCell = isDeadLpView ? "--" : event.valueUsd ? moneyZero(event.valueUsd, true) : "--";
+  const quoteCell = isDeadLpView ? escapeHtml(event.target || "Dead wallet") : amountText(event.wetcAmount, "WETC");
+  const priceCell = isDeadLpView ? "LP transfer" : priceText(event);
+  const makerCell = event.maker ? shortAddress(event.maker) : "--";
+  return `
+    <a class="tx-row" href="${href}" target="_blank" rel="noreferrer">
+      <span class="tx-type-cell">
+        <strong class="tx-type ${txTypeClass(event)}">${escapeHtml(event.type)}</strong>
+        <small>${escapeHtml(event.source)}</small>
+      </span>
+      <span>${valueCell}</span>
+      <span>${amountText(event.tokenAmount, event.tokenSymbol)}</span>
+      <span>${quoteCell}</span>
+      <span>${priceCell}</span>
+      <span>${makerCell}</span>
+      <span>${formatTxTime(event.timestamp)}</span>
+      <span>${event.txHash ? shortAddress(event.txHash) : "--"}</span>
+    </a>
+  `;
+}
+
+function txTypeClass(event) {
+  if (event.type === "Buy") return "tx-type-buy";
+  if (event.type === "Sell") return "tx-type-sell";
+  if (event.type === "Add LP") return "tx-type-add";
+  if (event.type === "Remove LP") return "tx-type-remove";
+  if (event.type === "LP Lock") return "tx-type-burn";
+  return "tx-type-transfer";
+}
+
+function amountText(value, symbol) {
+  if (!Number.isFinite(Number(value)) || Number(value) === 0) return "--";
+  return `${compactTokenAmount(value)} ${escapeHtml(symbol || "")}`.trim();
+}
+
+function priceText(event) {
+  if (event.target) return escapeHtml(event.target);
+  if (Number.isFinite(Number(event.priceUsd)) && Number(event.priceUsd) > 0) return money(event.priceUsd);
+  if (Number.isFinite(Number(event.priceWetc)) && Number(event.priceWetc) > 0) {
+    return `${compactDecimal(event.priceWetc, event.priceWetc < 1 ? 8 : 4)} WETC`;
+  }
+  return "--";
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[char]);
+}
+
+function formatTxTime(timestamp) {
   if (!timestamp) return "--";
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) return "--";
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return `${date.toLocaleDateString([], { month: "short", day: "numeric" })} ${date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
 }
 
 async function loadStats() {
@@ -1004,6 +1726,12 @@ els.chartModes.addEventListener("click", (event) => {
   loadCandles(selectedPool());
 });
 
+els.txFilters.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-tx-filter]");
+  if (!button) return;
+  setTxFilter(button.dataset.txFilter, true);
+});
+
 els.converterTokenInput.addEventListener("input", (event) => {
   const value = readNumberInput(event.target.value);
   state.converterTokenAmount = value === null || value < 0 ? null : value;
@@ -1019,6 +1747,14 @@ els.converterUsdInput.addEventListener("input", (event) => {
 });
 
 window.addEventListener("hashchange", routeFromHash);
+window.addEventListener("beforeunload", stopTransactionRefresh);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  const pool = selectedPool();
+  if (!pool) return;
+  loadTrades(pool, { silent: true });
+  startTransactionRefresh(pool.id);
+});
 
 loadStats();
 loadPools();

@@ -1,6 +1,7 @@
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getDeadLpBatch, getPoolTapeIndex, isEtcAddress } from "./server/market-index.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +16,7 @@ const upstreams = {
 const marketCache = new Map();
 
 function cacheTtl(pathname) {
+  if (pathname.includes("/token-transfers") || pathname.includes("/tokens/")) return 45 * 1000;
   if (pathname.includes("/trades")) return 30 * 1000;
   if (pathname.includes("/ohlcv")) return 10 * 60 * 1000;
   return 2 * 60 * 1000;
@@ -85,6 +87,33 @@ async function proxyRequest(req, res, prefix, target) {
 
 Object.entries(upstreams).forEach(([prefix, target]) => {
   app.use(prefix, (req, res) => proxyRequest(req, res, prefix, target));
+});
+
+app.get("/api/dead-lp", async (req, res) => {
+  try {
+    const contracts = String(req.query.contracts || "")
+      .split(",")
+      .map((contract) => contract.trim())
+      .filter(Boolean)
+      .slice(0, 80);
+    const results = await getDeadLpBatch(contracts);
+    res.json({ results });
+  } catch (error) {
+    res.status(error.statusCode || 502).json({ error: "dead_lp_unavailable", message: error.message });
+  }
+});
+
+app.get("/api/pool-tape/:contract", async (req, res) => {
+  try {
+    if (!isEtcAddress(req.params.contract)) {
+      res.status(400).json({ error: "invalid_contract" });
+      return;
+    }
+    const result = await getPoolTapeIndex(req.params.contract, req.query);
+    res.json(result);
+  } catch (error) {
+    res.status(error.statusCode || 502).json({ error: "pool_tape_unavailable", message: error.message });
+  }
 });
 
 app.use("/market-api/gecko", (req, res) => cachedJsonProxy(req, res, "/market-api/gecko", "https://api.geckoterminal.com"));

@@ -10,8 +10,8 @@
     <div class="app">
       <header class="topbar">
         <a class="brand" href="/" aria-label="ETCScreener home">
-          <span>ETC</span>
-          <strong>ETCScreener</strong>
+          <span class="brand-mark"><img src="/etc-shard.svg" alt="" /></span>
+          <strong><span>ETC</span>Screener</strong>
         </a>
 
         <nav class="nav-tabs" aria-label="Primary">
@@ -33,19 +33,19 @@
         <section class="view active" id="poolsView">
           <div class="page-head">
             <div>
-              <p>Ethereum Classic pairs</p>
-              <h1>ETC Pools</h1>
+              <p>Ethereum Classic market</p>
+              <h1>Pairs</h1>
             </div>
             <div class="market-tabs" aria-label="Pool views">
               <button class="active" data-sort="liquidity" type="button">Top liquidity</button>
-              <button data-sort="transfers" type="button">Activity</button>
+              <button data-sort="transfers" type="button">24h volume</button>
               <button data-sort="risk" type="button">Lower risk</button>
             </div>
             <div class="sort-wrap">
               <label for="sortSelect">Sort</label>
               <select id="sortSelect">
                 <option value="liquidity">Top liquidity</option>
-                <option value="transfers">Activity</option>
+                <option value="transfers">24h volume</option>
                 <option value="baseMarketCap">Market cap</option>
                 <option value="risk">Lower risk</option>
               </select>
@@ -66,8 +66,8 @@
               <strong id="visiblePoolCount">--</strong>
             </article>
             <article>
-              <span>Source</span>
-              <strong>Blockscout + Gecko</strong>
+              <span>Dead LP pools</span>
+              <strong id="deadLpPoolCount">--</strong>
             </article>
           </section>
 
@@ -78,9 +78,10 @@
                   <span>Pair</span>
                   <span>DEX</span>
                   <span>Fee</span>
-                  <span>Transfers</span>
+                  <span>24h Vol</span>
                   <span>Liquidity</span>
                   <span>Market cap</span>
+                  <span>Dead LP</span>
                   <span>Risk</span>
                 </div>
                 <div id="poolRows"></div>
@@ -122,9 +123,11 @@
 
               <div class="chart-toolbar">
                 <div class="timeframes">
-                  <button data-timeframe="hour" type="button">1H</button>
-                  <button class="active" data-timeframe="day" type="button">1D</button>
                   <button data-timeframe="minute" type="button">15M</button>
+                  <button data-timeframe="hour" type="button">1H</button>
+                  <button data-timeframe="hour4" type="button">4H</button>
+                  <button class="active" data-timeframe="day" type="button">1D</button>
+                  <button data-timeframe="max" type="button">Max</button>
                 </div>
                 <div class="chart-modes" aria-label="Chart mode">
                   <button class="active" data-chart-mode="usd" type="button">Token/USD</button>
@@ -155,6 +158,10 @@
                 <article>
                   <span>Liquidity</span>
                   <strong id="selectedMetricLiquidity">--</strong>
+                </article>
+                <article>
+                  <span>24h volume</span>
+                  <strong id="selectedVolume24h">--</strong>
                 </article>
               </section>
 
@@ -189,16 +196,34 @@
                 <div><span>Pool</span><strong id="selectedPoolAddress">--</strong></div>
               </div>
 
-              <section class="activity-panel">
+              <section class="activity-panel transaction-panel">
                 <div class="panel-title">
                   <div>
-                    <p>Recent swaps</p>
-                    <h2>Pool tape</h2>
+                    <p>Live pool tape</p>
+                    <h2>Transactions</h2>
                   </div>
                   <span id="txStatus">Waiting</span>
                 </div>
+                <div class="tx-filters" aria-label="Transaction filters">
+                  <button class="active" data-tx-filter="all" type="button">All</button>
+                  <button data-tx-filter="swap" type="button">Swaps</button>
+                  <button data-tx-filter="liquidity" type="button">Liquidity</button>
+                  <button data-tx-filter="burn" type="button">Dead LP</button>
+                </div>
+                <section class="lp-burn-summary" id="lpBurnSummary" aria-label="Dead LP summary" hidden>
+                  <article>
+                    <span>Dead LP locked</span>
+                    <strong id="lpDeadBalance">--</strong>
+                    <small>LP token held by 0x000...dEaD</small>
+                  </article>
+                  <article>
+                    <span>Dead LP events</span>
+                    <strong id="lpBurnRows">--</strong>
+                    <small>LP transfers sent to 0x000...dEaD</small>
+                  </article>
+                </section>
                 <div class="tx-table" id="txRows"></div>
-                <div class="activity-empty" id="txEmpty">Recent swaps appear here when GeckoTerminal returns pool trades.</div>
+                <div class="activity-empty" id="txEmpty">Transactions appear here when market activity is available.</div>
               </section>
             </aside>
           </div>

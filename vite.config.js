@@ -1,8 +1,10 @@
 import { defineConfig } from "vite";
+import { getDeadLpBatch, getPoolTapeIndex, isEtcAddress } from "./server/market-index.js";
 
 const marketCache = new Map();
 
 function cacheTtl(pathname) {
+  if (pathname.includes("/token-transfers") || pathname.includes("/tokens/")) return 45 * 1000;
   if (pathname.includes("/counters") || pathname.includes("/addresses/")) return 10 * 60 * 1000;
   if (pathname.includes("/trades")) return 30 * 1000;
   if (pathname.includes("/ohlcv")) return 10 * 60 * 1000;
@@ -66,6 +68,42 @@ async function cachedJsonProxy(req, res, next) {
   }
 }
 
+async function indexedApi(req, res, next) {
+  if (!req.url?.startsWith("/api/")) {
+    next();
+    return;
+  }
+
+  const url = new URL(req.url, "http://127.0.0.1");
+
+  try {
+    if (url.pathname === "/api/dead-lp") {
+      const contracts = String(url.searchParams.get("contracts") || "")
+        .split(",")
+        .map((contract) => contract.trim())
+        .filter(Boolean)
+        .slice(0, 80);
+      sendJson(res, 200, "application/json", JSON.stringify({ results: await getDeadLpBatch(contracts) }), "indexed");
+      return;
+    }
+
+    const tapeMatch = url.pathname.match(/^\/api\/pool-tape\/(0x[a-fA-F0-9]{40})$/);
+    if (tapeMatch) {
+      if (!isEtcAddress(tapeMatch[1])) {
+        sendJson(res, 400, "application/json", JSON.stringify({ error: "invalid_contract" }), "bypass");
+        return;
+      }
+      const result = await getPoolTapeIndex(tapeMatch[1], Object.fromEntries(url.searchParams.entries()));
+      sendJson(res, 200, "application/json", JSON.stringify(result), "indexed");
+      return;
+    }
+
+    next();
+  } catch (error) {
+    sendJson(res, error.statusCode || 502, "application/json", JSON.stringify({ error: "index_unavailable", message: error.message }), "bypass");
+  }
+}
+
 export default defineConfig({
   server: {
     proxy: {
@@ -85,6 +123,7 @@ export default defineConfig({
     {
       name: "etcscreener-market-cache",
       configureServer(server) {
+        server.middlewares.use(indexedApi);
         server.middlewares.use(cachedJsonProxy);
       },
     },
