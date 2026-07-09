@@ -19,6 +19,7 @@ const HISTORICAL_LP_TRANSFER_PAGES = 80;
 const state = {
   pools: [],
   selectedPoolId: null,
+  view: "market",
   query: "",
   sort: "liquidity",
   timeframe: "day",
@@ -57,18 +58,28 @@ const state = {
 
 const els = {
   navPools: document.querySelector("#navPools"),
+  navTerminal: document.querySelector("#navTerminal"),
   poolsView: document.querySelector("#poolsView"),
   dataStatus: document.querySelector("#dataStatus"),
   etcPrice: document.querySelector("#etcPrice"),
   topLiquidity: document.querySelector("#topLiquidity"),
+  indexedLiquidity: document.querySelector("#indexedLiquidity"),
+  indexedLiquidityMeta: document.querySelector("#indexedLiquidityMeta"),
   dexCount: document.querySelector("#dexCount"),
   visiblePoolCount: document.querySelector("#visiblePoolCount"),
   deadLpPoolCount: document.querySelector("#deadLpPoolCount"),
+  contextIndexedLiquidity: document.querySelector("#contextIndexedLiquidity"),
+  contextVisiblePools: document.querySelector("#contextVisiblePools"),
+  contextLiquidityTotal: document.querySelector("#contextLiquidityTotal"),
+  contextVolumeTotal: document.querySelector("#contextVolumeTotal"),
+  dexLiquidityRows: document.querySelector("#dexLiquidityRows"),
+  dexVolumeRows: document.querySelector("#dexVolumeRows"),
   searchInput: document.querySelector("#searchInput"),
   sortSelect: document.querySelector("#sortSelect"),
   marketTabs: document.querySelector(".market-tabs"),
   poolRows: document.querySelector("#poolRows"),
   emptyState: document.querySelector("#emptyState"),
+  backToPairs: document.querySelector("#backToPairs"),
   selectedDex: document.querySelector("#selectedDex"),
   selectedPair: document.querySelector("#selectedPair"),
   selectedContract: document.querySelector("#selectedContract"),
@@ -80,6 +91,10 @@ const els = {
   selectedLiquidity: document.querySelector("#selectedLiquidity"),
   selectedMetricLiquidity: document.querySelector("#selectedMetricLiquidity"),
   selectedFee: document.querySelector("#selectedFee"),
+  selectedStatMarketCap: document.querySelector("#selectedStatMarketCap"),
+  selectedStatVolume24h: document.querySelector("#selectedStatVolume24h"),
+  selectedStatTokenAge: document.querySelector("#selectedStatTokenAge"),
+  selectedStatDeadLp: document.querySelector("#selectedStatDeadLp"),
   selectedWetcToken: document.querySelector("#selectedWetcToken"),
   selectedLpSupply: document.querySelector("#selectedLpSupply"),
   selectedMarketCap: document.querySelector("#selectedMarketCap"),
@@ -91,6 +106,7 @@ const els = {
   selectedVerified: document.querySelector("#selectedVerified"),
   selectedRisk: document.querySelector("#selectedRisk"),
   selectedPoolAddress: document.querySelector("#selectedPoolAddress"),
+  infoPairLabel: document.querySelector("#infoPairLabel"),
   nativeChart: document.querySelector("#nativeChart"),
   chartOhlc: document.querySelector("#chartOhlc"),
   chartCoverage: document.querySelector("#chartCoverage"),
@@ -122,6 +138,7 @@ const els = {
 
 function money(value, compact = false) {
   if (!Number.isFinite(Number(value)) || Number(value) === 0) return "--";
+  if (!compact && Math.abs(Number(value)) < 0.0001) return `$${compactDecimal(value, 10)}`;
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
@@ -382,6 +399,50 @@ function deadLpPoolCountText(pools = visiblePools()) {
   return `${locked}/${checked.length}`;
 }
 
+function poolAgeText(pool) {
+  return ageText(pool?.tokenCreatedAt) || ageText(pool?.poolCreatedAt) || ageText(pool?.firstIndexedAt) || "--";
+}
+
+function totalIndexedLiquidity(pools = state.pools) {
+  return pools.reduce((sum, pool) => sum + (Number(pool.liquidity) || 0), 0);
+}
+
+function totalIndexedVolume(pools = state.pools) {
+  return pools.reduce((sum, pool) => sum + (Number(pool.volume24hUsd) || 0), 0);
+}
+
+function groupDexMetrics(pools = state.pools) {
+  const groups = new Map();
+  pools.forEach((pool) => {
+    const dex = pool.dex || "Unknown";
+    const current = groups.get(dex) || { dex, liquidity: 0, volume: 0, pools: 0 };
+    current.liquidity += Number(pool.liquidity) || 0;
+    current.volume += Number(pool.volume24hUsd) || 0;
+    current.pools += 1;
+    groups.set(dex, current);
+  });
+  return [...groups.values()];
+}
+
+function renderContextRows(rows, metric) {
+  const max = Math.max(...rows.map((row) => row[metric]), 0);
+  if (!rows.length) return `<div class="context-empty">No pool data yet.</div>`;
+  return rows
+    .map((row) => {
+      const value = Number(row[metric]) || 0;
+      const percent = max > 0 ? Math.round((value / max) * 100) : 0;
+      return `
+        <div class="context-data-row">
+          <span>${escapeHtml(row.dex)}</span>
+          <strong>${metric === "volume" ? moneyZero(value, true) : money(value, true)}</strong>
+          <i style="--bar:${percent}%"></i>
+          <small>${row.pools} pools</small>
+        </div>
+      `;
+    })
+    .join("");
+}
+
 function syncConverter(source = "state") {
   const pool = selectedPool();
   const symbol = pool?.baseSymbol || "Token";
@@ -444,10 +505,12 @@ function renderPools() {
           <span>${money(pool.marketCap, true)}</span>
           <span>${deadLpBadge(pool)}</span>
           <span><span class="risk risk-${riskLabel(pool.risk).toLowerCase()}">${riskLabel(pool.risk)}</span></span>
+          <span>${poolAgeText(pool)}</span>
         </a>
       `,
     )
     .join("");
+  renderMarketContext();
   loadPoolDetails(rows.slice(0, 50));
   loadBlockscoutCounters(rows.slice(0, 50));
   loadDeadLpSummaries(rows.slice(0, 80));
@@ -456,18 +519,45 @@ function renderPools() {
 function renderOverview() {
   const top = [...state.pools].sort((a, b) => b.liquidity - a.liquidity)[0];
   els.topLiquidity.textContent = top ? money(top.liquidity, true) : "--";
+  els.indexedLiquidity.textContent = money(totalIndexedLiquidity(), true);
+  els.indexedLiquidityMeta.textContent = `${state.pools.length || "--"} indexed pools`;
   els.dexCount.textContent = new Set(state.pools.map((pool) => pool.dex)).size || "--";
   els.visiblePoolCount.textContent = visiblePools().length || "--";
   els.deadLpPoolCount.textContent = deadLpPoolCountText();
+  renderMarketContext();
+}
+
+function renderMarketContext() {
+  const liquidity = totalIndexedLiquidity();
+  const volume = totalIndexedVolume();
+  const dexGroups = groupDexMetrics();
+  const liquidityRows = [...dexGroups].sort((a, b) => b.liquidity - a.liquidity).slice(0, 5);
+  const volumeRows = [...dexGroups].sort((a, b) => b.volume - a.volume).slice(0, 5);
+
+  els.contextIndexedLiquidity.textContent = money(liquidity, true);
+  els.contextVisiblePools.textContent = visiblePools().length || "--";
+  els.contextLiquidityTotal.textContent = money(liquidity, true);
+  els.contextVolumeTotal.textContent = moneyZero(volume, true);
+  els.dexLiquidityRows.innerHTML = renderContextRows(liquidityRows, "liquidity");
+  els.dexVolumeRows.innerHTML = renderContextRows(volumeRows, "volume");
+}
+
+function setNavState(name) {
+  els.navPools.classList.toggle("active", name === "market");
+  els.navTerminal.classList.toggle("active", name === "terminal");
 }
 
 function showView(name) {
-  els.poolsView.classList.toggle("active", name === "pools");
+  state.view = name;
+  els.poolsView.classList.toggle("market-mode", name === "market");
+  els.poolsView.classList.toggle("terminal-mode", name === "terminal");
+  setNavState(name);
+  if (name === "market") stopTransactionRefresh();
 }
 
 function openPool(poolId) {
   state.selectedPoolId = poolId;
-  showView("pools");
+  showView("terminal");
   renderPools();
   renderSelectedPool();
 }
@@ -479,11 +569,8 @@ function routeFromHash() {
     openPool(poolId);
     return;
   }
-  if (!state.selectedPoolId && state.pools.length) {
-    openPool([...state.pools].sort((a, b) => b.liquidity - a.liquidity)[0].id);
-    return;
-  }
-  showView("pools");
+  showView("market");
+  renderPools();
 }
 
 function renderSelectedPool() {
@@ -503,6 +590,9 @@ function renderSelectedPool() {
   els.selectedLiquidity.textContent = money(pool.liquidity, true);
   els.selectedMetricLiquidity.textContent = money(pool.liquidity, true);
   els.selectedFee.textContent = pool.fee === null ? "--" : `${pool.fee}%`;
+  els.selectedStatMarketCap.textContent = money(pool.marketCap, true);
+  els.selectedStatVolume24h.textContent = volume24hText(pool);
+  els.selectedStatDeadLp.textContent = deadLpText(pool);
   els.selectedWetcToken.textContent = wetcPerTokenText(pool, true);
   els.selectedLpSupply.textContent = lpSupplyText(pool);
   els.selectedMarketCap.textContent = money(pool.marketCap, true);
@@ -513,6 +603,7 @@ function renderSelectedPool() {
   els.selectedVerified.textContent = pool.verified === null ? "Checking" : pool.verified ? "Verified" : "Unverified";
   els.selectedRisk.textContent = riskLabel(pool.risk);
   els.selectedPoolAddress.textContent = shortAddress(pool.contract);
+  els.infoPairLabel.textContent = primaryTokenSymbol(pool) || pool.baseSymbol || "Token";
   loadBlockscoutCounters([pool]);
   loadBlockscoutAddresses([pool]);
   loadPoolBalances(pool);
@@ -573,6 +664,9 @@ function updateSelectedMetadata() {
   els.selectedLpSupply.textContent = lpSupplyText(pool);
   els.selectedMetricLiquidity.textContent = money(pool.liquidity, true);
   els.selectedVolume24h.textContent = volume24hText(pool);
+  els.selectedStatMarketCap.textContent = money(pool.marketCap, true);
+  els.selectedStatVolume24h.textContent = volume24hText(pool);
+  els.selectedStatDeadLp.textContent = deadLpText(pool);
   updateSelectedAge(pool);
 }
 
@@ -581,6 +675,7 @@ function updateSelectedAge(pool = selectedPool()) {
   const age = selectedAgeInfo(pool);
   els.selectedAgeLabel.textContent = age.label;
   els.selectedTokenAge.textContent = age.value;
+  els.selectedStatTokenAge.textContent = age.value;
 }
 
 async function loadBlockscoutAddresses(pools) {
@@ -1883,8 +1978,21 @@ async function loadPools() {
 }
 
 els.navPools.addEventListener("click", () => {
-  history.pushState("", document.title, window.location.pathname + window.location.search);
-  showView("pools");
+  if (window.location.hash === "#/markets" || window.location.hash === "") {
+    routeFromHash();
+    return;
+  }
+  window.location.hash = "#/markets";
+});
+
+els.backToPairs.addEventListener("click", () => {
+  window.location.hash = "#/markets";
+});
+
+els.navTerminal.addEventListener("click", () => {
+  const pool = selectedPool() || [...state.pools].sort((a, b) => b.liquidity - a.liquidity)[0];
+  if (!pool) return;
+  window.location.hash = `#pool=${encodeURIComponent(pool.id)}`;
 });
 
 els.searchInput.addEventListener("input", (event) => {

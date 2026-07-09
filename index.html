@@ -28,11 +28,12 @@
 
           <nav class="nav-tabs" aria-label="Primary">
             <button class="active" type="button" id="navPools">Pairs</button>
+            <button type="button" id="navTerminal">Terminal</button>
             <a href="https://etc.blockscout.com/pools" target="_blank" rel="noreferrer">Blockscout</a>
           </nav>
 
           <div class="search-wrap">
-            <input id="searchInput" type="search" placeholder="Search pair, DEX, or contract" />
+            <input id="searchInput" type="search" placeholder="Search pair, token, contract" />
           </div>
 
           <div class="network-strip">
@@ -42,11 +43,11 @@
         </header>
 
         <main>
-        <section class="view active" id="poolsView">
+        <section class="view active market-mode" id="poolsView">
           <div class="page-head">
             <div>
               <p>Ethereum Classic market</p>
-              <h1>Pairs</h1>
+              <h1>ETC Market</h1>
             </div>
             <div class="market-tabs" aria-label="Pool views">
               <button class="active" data-sort="liquidity" type="button">Top liquidity</button>
@@ -68,6 +69,11 @@
             <article>
               <span>Top liquidity</span>
               <strong id="topLiquidity">--</strong>
+            </article>
+            <article>
+              <span>Indexed liquidity</span>
+              <strong id="indexedLiquidity">--</strong>
+              <small id="indexedLiquidityMeta">Visible pools</small>
             </article>
             <article>
               <span>Tracked DEXes</span>
@@ -95,13 +101,68 @@
                   <span>Market cap</span>
                   <span>Dead LP</span>
                   <span>Risk</span>
+                  <span>Age</span>
                 </div>
                 <div id="poolRows"></div>
                 <div class="empty" id="emptyState" hidden>No ETC pools match your search.</div>
               </div>
             </section>
 
+            <aside class="market-context-panel" aria-label="ETC market context">
+              <div class="context-head">
+                <div>
+                  <p>ETC Market Context</p>
+                  <h2>Pool Liquidity</h2>
+                </div>
+              </div>
+
+              <section class="context-metrics" aria-label="ETC indexed pool metrics">
+                <article>
+                  <span>Indexed liquidity</span>
+                  <strong id="contextIndexedLiquidity">--</strong>
+                  <small>Visible Blockscout pools</small>
+                </article>
+                <article>
+                  <span>Visible pools</span>
+                  <strong id="contextVisiblePools">--</strong>
+                  <small>Current screener table</small>
+                </article>
+              </section>
+
+              <section class="context-block">
+                <div class="context-row-head">
+                  <span>Top DEXes by liquidity</span>
+                  <small id="contextLiquidityTotal">--</small>
+                </div>
+                <div class="context-list" id="dexLiquidityRows"></div>
+              </section>
+
+              <section class="context-block">
+                <div class="context-row-head">
+                  <span>Top DEXes by 24h volume</span>
+                  <small id="contextVolumeTotal">--</small>
+                </div>
+                <div class="context-list" id="dexVolumeRows"></div>
+              </section>
+
+              <section class="context-block">
+                <div class="context-row-head">
+                  <span>Data sources</span>
+                </div>
+                <div class="source-grid">
+                  <a href="https://etc.blockscout.com/pools" target="_blank" rel="noreferrer">Blockscout</a>
+                  <a href="https://www.geckoterminal.com/ethereum_classic/pools" target="_blank" rel="noreferrer">GeckoTerminal</a>
+                </div>
+              </section>
+
+              <p class="context-note">Click any pair to open the chart terminal.</p>
+            </aside>
+
             <aside class="selected-panel" aria-label="Selected pair chart">
+              <div class="terminal-actions">
+                <a class="back-link" id="backToPairs" href="#/markets">Back to Pairs</a>
+                <span>Pair terminal</span>
+              </div>
               <div class="chart-head">
                 <div class="selected-title">
                   <span class="token-dot token-dot-lg"><img src="/etc-shard.svg" alt="" /></span>
@@ -126,6 +187,22 @@
                 <article>
                   <span>Liquidity</span>
                   <strong id="selectedLiquidity">--</strong>
+                </article>
+                <article>
+                  <span>Market cap</span>
+                  <strong id="selectedStatMarketCap">--</strong>
+                </article>
+                <article>
+                  <span>24h volume</span>
+                  <strong id="selectedStatVolume24h">--</strong>
+                </article>
+                <article>
+                  <span>Token age</span>
+                  <strong id="selectedStatTokenAge">--</strong>
+                </article>
+                <article>
+                  <span>Dead LP</span>
+                  <strong id="selectedStatDeadLp">--</strong>
                 </article>
                 <article>
                   <span>Risk</span>
@@ -201,8 +278,8 @@
               <section class="activity-panel transaction-panel">
                 <div class="panel-title">
                   <div>
-                    <p>Live pool tape</p>
-                    <h2>Transactions</h2>
+                    <p>Classified activity</p>
+                    <h2>Live Pool Tape</h2>
                   </div>
                   <span id="txStatus">Waiting</span>
                 </div>
@@ -254,6 +331,7 @@
               </section>
 
               <div class="info-list">
+                <div class="info-list-title"><span>Token facts</span><strong id="infoPairLabel">--</strong></div>
                 <div><span>Fee</span><strong id="selectedFee">--</strong></div>
                 <div><span>Market cap</span><strong id="selectedMarketCap">--</strong></div>
                 <div><span id="selectedAgeLabel">Token age</span><strong id="selectedTokenAge">--</strong></div>
