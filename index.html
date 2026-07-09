@@ -208,9 +208,34 @@
                 </div>
                 <div class="tx-filters" aria-label="Transaction filters">
                   <button class="active" data-tx-filter="all" type="button">All</button>
+                  <button data-tx-filter="buy" type="button">Buys</button>
+                  <button data-tx-filter="sell" type="button">Sells</button>
                   <button data-tx-filter="swap" type="button">Swaps</button>
                   <button data-tx-filter="liquidity" type="button">Liquidity</button>
                   <button data-tx-filter="burn" type="button">Dead LP</button>
+                </div>
+                <div class="tx-query-panel" aria-label="Transaction query filters">
+                  <label>
+                    <span>Min USD</span>
+                    <input id="txMinUsd" type="text" inputmode="decimal" autocomplete="off" placeholder="Any" />
+                  </label>
+                  <label>
+                    <span>Min WETC</span>
+                    <input id="txMinWetc" type="text" inputmode="decimal" autocomplete="off" placeholder="Any" />
+                  </label>
+                  <label>
+                    <span>Min token / LP</span>
+                    <input id="txMinToken" type="text" inputmode="decimal" autocomplete="off" placeholder="Any" />
+                  </label>
+                  <label>
+                    <span>From</span>
+                    <input id="txDateFrom" type="date" />
+                  </label>
+                  <label>
+                    <span>To</span>
+                    <input id="txDateTo" type="date" />
+                  </label>
+                  <button id="txClearFilters" type="button">Clear</button>
                 </div>
                 <section class="lp-burn-summary" id="lpBurnSummary" aria-label="Dead LP summary" hidden>
                   <article>
@@ -231,7 +256,7 @@
               <div class="info-list">
                 <div><span>Fee</span><strong id="selectedFee">--</strong></div>
                 <div><span>Market cap</span><strong id="selectedMarketCap">--</strong></div>
-                <div><span>Chart volume</span><strong id="selectedVolume">--</strong></div>
+                <div><span id="selectedAgeLabel">Token age</span><strong id="selectedTokenAge">--</strong></div>
                 <div><span>ETC reference</span><strong id="selectedWetcUsd">--</strong></div>
                 <div><span>Blockscout transfers</span><strong id="selectedTransfers">--</strong></div>
                 <div><span>Contract status</span><strong id="selectedVerified">--</strong></div>

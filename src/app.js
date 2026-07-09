@@ -11,10 +11,10 @@ const POOL_TAPE_API = "/api/pool-tape";
 const DEAD_ADDRESS = "0x000000000000000000000000000000000000dead";
 const MIN_DISPLAY_TOKEN_AMOUNT = 0.000001;
 const TX_REFRESH_INTERVAL_MS = 45 * 1000;
-const POOL_TAPE_CACHE_VERSION = 3;
+const POOL_TAPE_CACHE_VERSION = 4;
 const POOL_TAPE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
-const HISTORICAL_POOL_TRANSFER_PAGES = 12;
-const HISTORICAL_LP_TRANSFER_PAGES = 60;
+const HISTORICAL_POOL_TRANSFER_PAGES = 24;
+const HISTORICAL_LP_TRANSFER_PAGES = 80;
 
 const state = {
   pools: [],
@@ -24,6 +24,13 @@ const state = {
   timeframe: "day",
   chartMode: "usd",
   txFilter: "all",
+  txQuery: {
+    minUsd: null,
+    minWetc: null,
+    minToken: null,
+    fromDate: "",
+    toDate: "",
+  },
   candleRequest: 0,
   transactionRequest: 0,
   transactionRefreshTimer: null,
@@ -38,6 +45,8 @@ const state = {
   blockscoutAddresses: new Set(),
   poolDetails: new Set(),
   poolBalances: new Set(),
+  tokenAgeCache: new Map(),
+  tokenAgeRequests: new Set(),
   chart: {
     api: null,
     candles: null,
@@ -74,7 +83,8 @@ const els = {
   selectedWetcToken: document.querySelector("#selectedWetcToken"),
   selectedLpSupply: document.querySelector("#selectedLpSupply"),
   selectedMarketCap: document.querySelector("#selectedMarketCap"),
-  selectedVolume: document.querySelector("#selectedVolume"),
+  selectedAgeLabel: document.querySelector("#selectedAgeLabel"),
+  selectedTokenAge: document.querySelector("#selectedTokenAge"),
   selectedVolume24h: document.querySelector("#selectedVolume24h"),
   selectedWetcUsd: document.querySelector("#selectedWetcUsd"),
   selectedTransfers: document.querySelector("#selectedTransfers"),
@@ -97,6 +107,12 @@ const els = {
   txRows: document.querySelector("#txRows"),
   txEmpty: document.querySelector("#txEmpty"),
   txFilters: document.querySelector(".tx-filters"),
+  txMinUsd: document.querySelector("#txMinUsd"),
+  txMinWetc: document.querySelector("#txMinWetc"),
+  txMinToken: document.querySelector("#txMinToken"),
+  txDateFrom: document.querySelector("#txDateFrom"),
+  txDateTo: document.querySelector("#txDateTo"),
+  txClearFilters: document.querySelector("#txClearFilters"),
   lpBurnSummary: document.querySelector("#lpBurnSummary"),
   lpDeadBalance: document.querySelector("#lpDeadBalance"),
   lpBurnRows: document.querySelector("#lpBurnRows"),
@@ -171,6 +187,40 @@ function compactTokenAmount(value) {
   }).format(Number(value));
 }
 
+function timestampToTime(value) {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function ageText(value) {
+  const time = timestampToTime(value);
+  if (time === null) return null;
+  const days = Math.max(0, Math.floor((Date.now() - time) / 86400000));
+  if (days >= 365) {
+    const years = Math.floor(days / 365);
+    const months = Math.floor((days % 365) / 30);
+    return months ? `${years}y ${months}m` : `${years}y`;
+  }
+  if (days >= 30) {
+    const months = Math.floor(days / 30);
+    const restDays = days % 30;
+    return restDays ? `${months}m ${restDays}d` : `${months}m`;
+  }
+  return `${days}d`;
+}
+
+function selectedAgeInfo(pool) {
+  if (!pool) return { label: "Token age", value: "--" };
+  const tokenAge = ageText(pool.tokenCreatedAt);
+  if (tokenAge) return { label: "Token age", value: tokenAge };
+  const poolAge = ageText(pool.poolCreatedAt);
+  if (poolAge) return { label: "Pool age", value: poolAge };
+  const indexedAge = ageText(pool.firstIndexedAt);
+  if (indexedAge) return { label: "First indexed", value: indexedAge };
+  return { label: "Token age", value: pool.tokenAgeStatus === "loading" ? "Checking" : "--" };
+}
+
 function scaledTokenSupply(raw, decimals) {
   const supply = Number(raw);
   const tokenDecimals = Number(decimals || 0);
@@ -230,6 +280,10 @@ function mapPool(item) {
     deadLpAmount: null,
     deadLpSymbol: "LP",
     deadLpLockRows: null,
+    poolCreatedAt: item.pool_created_at || null,
+    tokenCreatedAt: null,
+    tokenAgeStatus: "unknown",
+    firstIndexedAt: null,
   };
   pool.risk = scorePoolRisk(pool);
   return pool;
@@ -452,7 +506,7 @@ function renderSelectedPool() {
   els.selectedWetcToken.textContent = wetcPerTokenText(pool, true);
   els.selectedLpSupply.textContent = lpSupplyText(pool);
   els.selectedMarketCap.textContent = money(pool.marketCap, true);
-  els.selectedVolume.textContent = "--";
+  updateSelectedAge(pool);
   els.selectedVolume24h.textContent = volume24hText(pool);
   els.selectedWetcUsd.textContent = state.wetcUsd ? money(state.wetcUsd) : "--";
   els.selectedTransfers.textContent = pool.transfers === null ? "Loading" : compactNumber(pool.transfers);
@@ -463,6 +517,7 @@ function renderSelectedPool() {
   loadBlockscoutAddresses([pool]);
   loadPoolBalances(pool);
   loadPoolDetails([pool]);
+  loadTokenAge(pool);
   loadCandles(pool);
   loadTrades(pool);
   startTransactionRefresh(pool.id);
@@ -518,6 +573,14 @@ function updateSelectedMetadata() {
   els.selectedLpSupply.textContent = lpSupplyText(pool);
   els.selectedMetricLiquidity.textContent = money(pool.liquidity, true);
   els.selectedVolume24h.textContent = volume24hText(pool);
+  updateSelectedAge(pool);
+}
+
+function updateSelectedAge(pool = selectedPool()) {
+  if (!pool) return;
+  const age = selectedAgeInfo(pool);
+  els.selectedAgeLabel.textContent = age.label;
+  els.selectedTokenAge.textContent = age.value;
 }
 
 async function loadBlockscoutAddresses(pools) {
@@ -583,6 +646,51 @@ async function loadPoolBalances(pool) {
   }
 }
 
+function applyTokenAge(pool, tokenAddress, result) {
+  if (!pool || !sameAddress(primaryTokenAddress(pool), tokenAddress)) return;
+  pool.tokenCreatedAt = result.createdAt || null;
+  pool.tokenAgeStatus = result.status || "unknown";
+  updateSelectedAge(pool);
+}
+
+async function loadTokenAge(pool) {
+  const tokenAddress = primaryTokenAddress(pool)?.toLowerCase();
+  if (!pool || !tokenAddress) return;
+
+  const cached = state.tokenAgeCache.get(tokenAddress);
+  if (cached) {
+    applyTokenAge(pool, tokenAddress, cached);
+    return;
+  }
+  if (state.tokenAgeRequests.has(tokenAddress)) return;
+
+  state.tokenAgeRequests.add(tokenAddress);
+  pool.tokenAgeStatus = "loading";
+  updateSelectedAge(pool);
+
+  try {
+    const address = await fetchBlockscoutJson(`/addresses/${tokenAddress}`);
+    let createdAt = null;
+    if (address.creation_transaction_hash) {
+      const transaction = await fetchBlockscoutJson(`/transactions/${address.creation_transaction_hash}`);
+      createdAt = transaction.timestamp || null;
+    }
+    const result = { createdAt, status: createdAt ? "known" : "unknown" };
+    state.tokenAgeCache.set(tokenAddress, result);
+
+    const activePool = selectedPool();
+    if (activePool?.id === pool.id) applyTokenAge(activePool, tokenAddress, result);
+  } catch (error) {
+    const result = { createdAt: null, status: "error" };
+    state.tokenAgeCache.set(tokenAddress, result);
+    const activePool = selectedPool();
+    if (activePool?.id === pool.id) applyTokenAge(activePool, tokenAddress, result);
+    console.warn(error);
+  } finally {
+    state.tokenAgeRequests.delete(tokenAddress);
+  }
+}
+
 async function fetchPoolDetails(poolIds) {
   const response = await fetch(`${POOL_DETAILS_API}/${poolIds.join(",")}`);
   if (!response.ok) throw new Error(`GeckoTerminal pool details returned ${response.status}`);
@@ -596,6 +704,7 @@ function hydratePoolDetails(item) {
 
   pool.basePriceUsd = Number(item.attributes?.base_token_price_usd || 0) || null;
   pool.basePriceWetc = Number(item.attributes?.base_token_price_native_currency || 0) || null;
+  pool.poolCreatedAt = item.attributes?.pool_created_at || pool.poolCreatedAt || null;
   pool.volume24hUsd = Number(item.attributes?.volume_usd?.h24 ?? item.attributes?.volume_usd?.["24h"]);
   if (!Number.isFinite(pool.volume24hUsd)) pool.volume24hUsd = null;
   return true;
@@ -736,7 +845,7 @@ function writeCachedPoolTape(pool, transactions, lpLockSummary) {
       poolTapeCacheKey(pool),
       JSON.stringify({
         savedAt: Date.now(),
-        transactions: transactions.slice(0, 600),
+        transactions: transactions.slice(0, 1200),
         lpLockSummary,
       }),
     );
@@ -1015,7 +1124,6 @@ async function loadCandles(pool) {
     els.selectedPrice.textContent = "--";
     els.selectedChange.textContent = "Chart unavailable";
     els.selectedChange.className = "";
-    els.selectedVolume.textContent = "--";
     console.warn(error);
   }
 }
@@ -1083,7 +1191,6 @@ function renderCandles(candles, pool, frame, sourceLabel = "GeckoTerminal OHLCV"
   els.selectedPriceLabel.textContent = `Last close - ${state.chartMode === "wetc" ? "Token/WETC" : "Token/USD"}`;
   els.selectedChange.textContent = `${label} - ${frame.label} ${change >= 0 ? "+" : ""}${change.toFixed(2)}%`;
   els.selectedChange.className = change >= 0 ? "positive" : "negative";
-  els.selectedVolume.textContent = money(totalVolume, true);
   els.chartStatus.textContent = `${sourceLabel} | ${label} | ${cleanCandles.length} candles`;
   els.chartCoverage.textContent = `${firstDate.toLocaleDateString()} - ${lastDate.toLocaleDateString()}`;
   els.chartModeLabel.textContent = state.chartMode === "wetc" ? "Token/WETC" : "Token/USD";
@@ -1122,6 +1229,7 @@ async function loadTrades(pool, options = {}) {
     const mergedSummary = mergeLpLockSummaries(liveSummary, cachedTape?.lpLockSummary);
     applyDeadLpSummary(pool, mergedSummary);
     state.transactions = mergeTransactions(liveTransactions, cachedTape?.transactions || []);
+    updateFirstIndexedAge(pool);
     updateLpLockSummary(mergedSummary);
     renderTransactions();
     if (!silent) loadHistoricalPoolTape(pool, mergedSummary).catch(console.warn);
@@ -1157,6 +1265,7 @@ async function loadHistoricalPoolTape(pool, seedSummary = null) {
     writeCachedPoolTape(pool, historicalTransactions, historicalSummary);
 
     state.transactions = mergeTransactions(state.transactions, historicalTransactions);
+    updateFirstIndexedAge(pool);
     const mergedSummary = mergeLpLockSummaries(seedSummary, historicalSummary);
     applyDeadLpSummary(pool, mergedSummary);
     updateLpLockSummary(mergedSummary);
@@ -1330,6 +1439,21 @@ function mergeTransactions(...transactionLists) {
     byId.set(id, { ...(byId.get(id) || {}), ...event, id });
   });
   return [...byId.values()].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+}
+
+function updateFirstIndexedAge(pool, transactions = state.transactions) {
+  if (!pool || !transactions?.length) return;
+  const oldestTime = transactions.reduce((oldest, event) => {
+    const time = timestampToTime(event.timestamp);
+    if (time === null) return oldest;
+    return oldest === null || time < oldest ? time : oldest;
+  }, null);
+  if (oldestTime === null) return;
+  const oldestIso = new Date(oldestTime).toISOString();
+  if (!pool.firstIndexedAt || oldestTime < timestampToTime(pool.firstIndexedAt)) {
+    pool.firstIndexedAt = oldestIso;
+    updateSelectedAge(pool);
+  }
 }
 
 function mergeLpLockSummaries(...summaries) {
@@ -1541,30 +1665,103 @@ function estimateTransferUsd(pool, tokenAmount, wetcAmount) {
   return null;
 }
 
+function matchesTxType(event) {
+  if (state.txFilter === "all") return true;
+  if (state.txFilter === "buy") return event.type === "Buy";
+  if (state.txFilter === "sell") return event.type === "Sell";
+  return event.category === state.txFilter;
+}
+
+function txQueryActive() {
+  return Boolean(
+    Number(state.txQuery.minUsd) > 0 ||
+      Number(state.txQuery.minWetc) > 0 ||
+      Number(state.txQuery.minToken) > 0 ||
+      state.txQuery.fromDate ||
+      state.txQuery.toDate,
+  );
+}
+
+function dateBoundary(value, endOfDay = false) {
+  if (!value) return null;
+  const date = new Date(`${value}T${endOfDay ? "23:59:59.999" : "00:00:00"}`);
+  const time = date.getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function matchesTxQuery(event) {
+  const minUsd = Number(state.txQuery.minUsd) || 0;
+  const minWetc = Number(state.txQuery.minWetc) || 0;
+  const minToken = Number(state.txQuery.minToken) || 0;
+
+  if (minUsd > 0 && !(Number(event.valueUsd) >= minUsd)) return false;
+  if (minWetc > 0 && !(Number(event.wetcAmount) >= minWetc)) return false;
+  if (minToken > 0 && !(Number(event.tokenAmount) >= minToken)) return false;
+
+  const fromTime = dateBoundary(state.txQuery.fromDate);
+  const toTime = dateBoundary(state.txQuery.toDate, true);
+  if (fromTime !== null || toTime !== null) {
+    const eventTime = new Date(event.timestamp || "").getTime();
+    if (!Number.isFinite(eventTime)) return false;
+    if (fromTime !== null && eventTime < fromTime) return false;
+    if (toTime !== null && eventTime > toTime) return false;
+  }
+
+  return true;
+}
+
+function txFilterEmptyText() {
+  if (txQueryActive()) return "No transactions match the current size/date filters.";
+  if (state.txFilter === "buy") return "No buy transactions in the current feed.";
+  if (state.txFilter === "sell") return "No sell transactions in the current feed.";
+  return state.txFilter !== "all" ? `No ${state.txFilter} transactions in the current feed.` : "No recent pool transactions returned yet.";
+}
+
+function syncTxQueryFromControls() {
+  state.txQuery = {
+    minUsd: readNumberInput(els.txMinUsd?.value),
+    minWetc: readNumberInput(els.txMinWetc?.value),
+    minToken: readNumberInput(els.txMinToken?.value),
+    fromDate: els.txDateFrom?.value || "",
+    toDate: els.txDateTo?.value || "",
+  };
+  renderTransactions();
+}
+
+function clearTxQueryControls() {
+  [els.txMinUsd, els.txMinWetc, els.txMinToken, els.txDateFrom, els.txDateTo].filter(Boolean).forEach((input) => {
+    input.value = "";
+  });
+  syncTxQueryFromControls();
+}
+
 function renderTransactions() {
   const events = state.transactions || [];
-  const matching = state.txFilter === "all" ? events : events.filter((event) => event.category === state.txFilter);
+  const typed = events.filter(matchesTxType);
+  const matching = typed.filter(matchesTxQuery);
   const rowLimit = state.txFilter === "all" ? 120 : 250;
   const visible = matching.slice(0, rowLimit);
 
   if (!matching.length) {
-    els.txStatus.textContent = events.length ? `${events.length} txns` : "No txns";
+    els.txStatus.textContent = events.length ? `${typed.length}/${events.length} txns` : "No txns";
     els.txRows.innerHTML = "";
     els.txEmpty.hidden = false;
-    els.txEmpty.textContent = events.length
-      ? `No ${state.txFilter} transactions in the current feed.`
-      : "No recent pool transactions returned yet.";
+    els.txEmpty.textContent = events.length ? txFilterEmptyText() : "No recent pool transactions returned yet.";
     return;
   }
 
-  els.txStatus.textContent =
-    state.txFilter === "all"
-      ? visible.length < events.length
-        ? `${visible.length}/${events.length} txns`
-        : `${events.length} txns`
-      : visible.length < matching.length
-        ? `${visible.length}/${matching.length} txns`
-        : `${matching.length}/${events.length} txns`;
+  if (txQueryActive()) {
+    els.txStatus.textContent = visible.length < matching.length ? `${visible.length}/${matching.length} matched` : `${matching.length}/${typed.length} matched`;
+  } else {
+    els.txStatus.textContent =
+      state.txFilter === "all"
+        ? visible.length < events.length
+          ? `${visible.length}/${events.length} txns`
+          : `${events.length} txns`
+        : visible.length < matching.length
+          ? `${visible.length}/${matching.length} txns`
+          : `${matching.length}/${events.length} txns`;
+  }
   els.txEmpty.hidden = true;
   const isDeadLpView = state.txFilter === "burn";
   const headers = isDeadLpView
@@ -1731,6 +1928,10 @@ els.txFilters.addEventListener("click", (event) => {
   if (!button) return;
   setTxFilter(button.dataset.txFilter, true);
 });
+
+[els.txMinUsd, els.txMinWetc, els.txMinToken].filter(Boolean).forEach((input) => input.addEventListener("input", syncTxQueryFromControls));
+[els.txDateFrom, els.txDateTo].filter(Boolean).forEach((input) => input.addEventListener("change", syncTxQueryFromControls));
+els.txClearFilters?.addEventListener("click", clearTxQueryControls);
 
 els.converterTokenInput.addEventListener("input", (event) => {
   const value = readNumberInput(event.target.value);
