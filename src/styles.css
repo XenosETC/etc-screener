@@ -1420,7 +1420,7 @@ h2 {
 
 .lp-burn-summary {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 7px;
   margin-top: 8px;
 }
@@ -1436,7 +1436,7 @@ h2 {
   background:
     linear-gradient(180deg, rgba(240, 189, 92, 0.08), rgba(240, 189, 92, 0.035)),
     rgba(8, 12, 18, 0.72);
-  padding: 9px;
+  padding: 8px;
 }
 
 .lp-burn-summary span,
@@ -1457,10 +1457,10 @@ h2 {
 
 .lp-burn-summary strong {
   display: block;
-  margin-top: 4px;
+  margin-top: 3px;
   overflow: hidden;
   color: var(--yellow);
-  font-size: 1rem;
+  font-size: 0.9rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

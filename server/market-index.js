@@ -4,7 +4,7 @@ import path from "node:path";
 const BLOCKSCOUT_API = "https://etc.blockscout.com/api/v2";
 const DEAD_ADDRESS = "0x000000000000000000000000000000000000dead";
 const MIN_DISPLAY_TOKEN_AMOUNT = 0.000001;
-const CACHE_SCHEMA_VERSION = 1;
+const CACHE_SCHEMA_VERSION = 2;
 const CACHE_FILE = path.join(process.env.ETCSCREENER_CACHE_DIR || path.join(process.cwd(), ".cache"), "market-index.json");
 const DEAD_LP_CACHE_TTL_MS = 15 * 60 * 1000;
 const POOL_TAPE_CACHE_TTL_MS = 20 * 60 * 1000;
@@ -34,6 +34,9 @@ export async function getDeadLpBatch(contracts) {
         deadBalance: null,
         symbol: "LP",
         lockRows: 0,
+        holderCount: null,
+        totalSupply: null,
+        deadPercent: null,
         checkedAt: new Date().toISOString(),
         message: error.message,
       };
@@ -96,6 +99,9 @@ async function getDeadLpSummary(contract) {
       deadBalance: null,
       symbol: "LP",
       lockRows: 0,
+      holderCount: null,
+      totalSupply: null,
+      deadPercent: null,
       checkedAt: new Date().toISOString(),
     };
   }
@@ -103,12 +109,17 @@ async function getDeadLpSummary(contract) {
   return withCache(`dead-lp:${normalized}`, DEAD_LP_CACHE_TTL_MS, async () => {
     const [lpHolders, tokenInfo] = await Promise.all([fetchPaginated(`/tokens/${normalized}/holders`, DEFAULT_HOLDER_PAGES), fetchTokenInfo(normalized)]);
     const summary = summarizeDeadLp([], lpHolders, tokenInfo);
+    const totalSupply = summary?.totalSupply ?? tokenTotalSupply(tokenInfo);
+    const holderCount = summary?.holderCount ?? tokenHolderCount(tokenInfo);
     return {
       contract: normalized,
       status: summary?.deadBalance > 0 ? "locked" : "none",
       deadBalance: summary?.deadBalance || 0,
       symbol: summary?.symbol || tokenInfo?.symbol || holderTokenSymbol(lpHolders) || "LP",
       lockRows: summary?.lockRows || 0,
+      holderCount,
+      totalSupply,
+      deadPercent: summary?.deadPercent ?? deadLpPercent(summary?.deadBalance || 0, totalSupply),
       checkedAt: new Date().toISOString(),
     };
   });
@@ -164,6 +175,8 @@ function summarizeDeadLp(lpTransfers, lpHolders, tokenInfo = null) {
   const deadTransferred = deadTransfers.reduce((sum, transfer) => sum + Number(transfer.amount || 0), 0);
   const deadHolder = lpHolders.find((holder) => sameAddress(holder.address?.hash, DEAD_ADDRESS));
   const deadBalance = deadHolder ? scaledTokenSupply(deadHolder.value, decimals) : deadTransferred;
+  const totalSupply = tokenTotalSupply(tokenInfo);
+  const holderCount = tokenHolderCount(tokenInfo);
 
   if (!deadTransfers.length && !Number(deadBalance)) return null;
 
@@ -171,6 +184,9 @@ function summarizeDeadLp(lpTransfers, lpHolders, tokenInfo = null) {
     symbol,
     deadBalance,
     lockRows: deadTransfers.length,
+    holderCount,
+    totalSupply,
+    deadPercent: deadLpPercent(deadBalance, totalSupply),
   };
 }
 
@@ -188,6 +204,26 @@ function scaledTokenSupply(raw, decimals) {
   const tokenDecimals = Number(decimals || 0);
   if (!Number.isFinite(supply) || !Number.isFinite(tokenDecimals)) return null;
   return supply / 10 ** tokenDecimals;
+}
+
+function tokenHolderCount(tokenInfo) {
+  const count = Number(tokenInfo?.holders_count ?? tokenInfo?.holdersCount ?? tokenInfo?.holders ?? tokenInfo?.holder_count);
+  return Number.isFinite(count) ? count : null;
+}
+
+function tokenTotalSupply(tokenInfo) {
+  const rawSupply = tokenInfo?.total_supply ?? tokenInfo?.totalSupply;
+  if (rawSupply === null || rawSupply === undefined || rawSupply === "") return null;
+  const supply = scaledTokenSupply(rawSupply, tokenInfo?.decimals);
+  return Number.isFinite(Number(supply)) ? Number(supply) : null;
+}
+
+function deadLpPercent(deadBalance, totalSupply) {
+  if (deadBalance === null || deadBalance === undefined || deadBalance === "") return null;
+  const amount = Number(deadBalance);
+  const supply = Number(totalSupply);
+  if (!Number.isFinite(amount) || !Number.isFinite(supply) || supply <= 0) return null;
+  return Math.max(0, Math.min(100, (amount / supply) * 100));
 }
 
 function lpTokenSymbol(transfers) {

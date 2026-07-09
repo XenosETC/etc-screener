@@ -11,7 +11,7 @@ const POOL_TAPE_API = "/api/pool-tape";
 const DEAD_ADDRESS = "0x000000000000000000000000000000000000dead";
 const MIN_DISPLAY_TOKEN_AMOUNT = 0.000001;
 const TX_REFRESH_INTERVAL_MS = 45 * 1000;
-const POOL_TAPE_CACHE_VERSION = 4;
+const POOL_TAPE_CACHE_VERSION = 5;
 const POOL_TAPE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const HISTORICAL_POOL_TRANSFER_PAGES = 24;
 const HISTORICAL_LP_TRANSFER_PAGES = 80;
@@ -48,6 +48,8 @@ const state = {
   poolBalances: new Set(),
   tokenAgeCache: new Map(),
   tokenAgeRequests: new Set(),
+  tokenInfoCache: new Map(),
+  tokenInfoRequests: new Map(),
   chart: {
     api: null,
     candles: null,
@@ -100,6 +102,8 @@ const els = {
   selectedMarketCap: document.querySelector("#selectedMarketCap"),
   selectedAgeLabel: document.querySelector("#selectedAgeLabel"),
   selectedTokenAge: document.querySelector("#selectedTokenAge"),
+  selectedTokenHolders: document.querySelector("#selectedTokenHolders"),
+  selectedLpHolders: document.querySelector("#selectedLpHolders"),
   selectedVolume24h: document.querySelector("#selectedVolume24h"),
   selectedWetcUsd: document.querySelector("#selectedWetcUsd"),
   selectedTransfers: document.querySelector("#selectedTransfers"),
@@ -132,6 +136,7 @@ const els = {
   lpBurnSummary: document.querySelector("#lpBurnSummary"),
   lpDeadBalance: document.querySelector("#lpDeadBalance"),
   lpBurnRows: document.querySelector("#lpBurnRows"),
+  lpDeadPercent: document.querySelector("#lpDeadPercent"),
   timeframes: document.querySelector(".timeframes"),
   chartModes: document.querySelector(".chart-modes"),
 };
@@ -245,6 +250,33 @@ function scaledTokenSupply(raw, decimals) {
   return supply / 10 ** tokenDecimals;
 }
 
+function tokenHolderCount(tokenInfo) {
+  const count = Number(tokenInfo?.holders_count ?? tokenInfo?.holdersCount ?? tokenInfo?.holders ?? tokenInfo?.holder_count);
+  return Number.isFinite(count) ? count : null;
+}
+
+function tokenTotalSupply(tokenInfo) {
+  const rawSupply = tokenInfo?.total_supply ?? tokenInfo?.totalSupply;
+  if (rawSupply === null || rawSupply === undefined || rawSupply === "") return null;
+  const supply = scaledTokenSupply(rawSupply, tokenInfo?.decimals);
+  return Number.isFinite(Number(supply)) ? Number(supply) : null;
+}
+
+function deadLpPercent(deadBalance, totalSupply) {
+  if (deadBalance === null || deadBalance === undefined || deadBalance === "") return null;
+  const amount = Number(deadBalance);
+  const supply = Number(totalSupply);
+  if (!Number.isFinite(amount) || !Number.isFinite(supply) || supply <= 0) return null;
+  return Math.max(0, Math.min(100, (amount / supply) * 100));
+}
+
+function deadLpPercentText(value) {
+  const percent = Number(value);
+  if (!Number.isFinite(percent)) return "--";
+  if (percent > 0 && percent < 0.01) return "<0.01%";
+  return `${percent.toFixed(percent >= 10 ? 1 : 2)}%`;
+}
+
 function shortAddress(address) {
   if (!address) return "--";
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
@@ -297,6 +329,11 @@ function mapPool(item) {
     deadLpAmount: null,
     deadLpSymbol: "LP",
     deadLpLockRows: null,
+    deadLpPercent: null,
+    tokenHolderCount: null,
+    lpHolderCount: null,
+    lpTotalSupply: null,
+    holderFactsStatus: "unknown",
     poolCreatedAt: item.pool_created_at || null,
     tokenCreatedAt: null,
     tokenAgeStatus: "unknown",
@@ -597,6 +634,7 @@ function renderSelectedPool() {
   els.selectedLpSupply.textContent = lpSupplyText(pool);
   els.selectedMarketCap.textContent = money(pool.marketCap, true);
   updateSelectedAge(pool);
+  updateSelectedHolderFacts(pool);
   els.selectedVolume24h.textContent = volume24hText(pool);
   els.selectedWetcUsd.textContent = state.wetcUsd ? money(state.wetcUsd) : "--";
   els.selectedTransfers.textContent = pool.transfers === null ? "Loading" : compactNumber(pool.transfers);
@@ -609,6 +647,7 @@ function renderSelectedPool() {
   loadPoolBalances(pool);
   loadPoolDetails([pool]);
   loadTokenAge(pool);
+  loadPairHolderFacts(pool);
   loadCandles(pool);
   loadTrades(pool);
   startTransactionRefresh(pool.id);
@@ -668,6 +707,7 @@ function updateSelectedMetadata() {
   els.selectedStatVolume24h.textContent = volume24hText(pool);
   els.selectedStatDeadLp.textContent = deadLpText(pool);
   updateSelectedAge(pool);
+  updateSelectedHolderFacts(pool);
 }
 
 function updateSelectedAge(pool = selectedPool()) {
@@ -676,6 +716,75 @@ function updateSelectedAge(pool = selectedPool()) {
   els.selectedAgeLabel.textContent = age.label;
   els.selectedTokenAge.textContent = age.value;
   els.selectedStatTokenAge.textContent = age.value;
+}
+
+function updateSelectedHolderFacts(pool = selectedPool()) {
+  if (!pool) return;
+  const pending = pool.holderFactsStatus === "loading" ? "Checking" : "--";
+  els.selectedTokenHolders.textContent = pool.tokenHolderCount === null ? pending : compactNumber(pool.tokenHolderCount);
+  els.selectedLpHolders.textContent = pool.lpHolderCount === null ? pending : compactNumber(pool.lpHolderCount);
+}
+
+async function fetchTokenInfo(address) {
+  const normalized = String(address || "").toLowerCase();
+  if (!normalized) return null;
+  if (state.tokenInfoCache.has(normalized)) return state.tokenInfoCache.get(normalized);
+  if (!state.tokenInfoRequests.has(normalized)) {
+    const request = fetchBlockscoutJson(`/tokens/${normalized}`)
+      .then((tokenInfo) => {
+        state.tokenInfoCache.set(normalized, tokenInfo || null);
+        return tokenInfo || null;
+      })
+      .finally(() => state.tokenInfoRequests.delete(normalized));
+    state.tokenInfoRequests.set(normalized, request);
+  }
+  return state.tokenInfoRequests.get(normalized);
+}
+
+function applyPairHolderFacts(pool, tokenInfo, lpInfo) {
+  const holderCount = tokenHolderCount(tokenInfo);
+  const lpHolders = tokenHolderCount(lpInfo);
+  const totalSupply = tokenTotalSupply(lpInfo);
+
+  if (holderCount !== null) pool.tokenHolderCount = holderCount;
+  if (lpHolders !== null) pool.lpHolderCount = lpHolders;
+  if (totalSupply !== null) pool.lpTotalSupply = totalSupply;
+  pool.deadLpPercent = deadLpPercent(pool.deadLpAmount, pool.lpTotalSupply);
+}
+
+async function loadPairHolderFacts(pool) {
+  const tokenAddress = primaryTokenAddress(pool)?.toLowerCase();
+  const lpAddress = pool?.contract?.toLowerCase();
+  if (!pool || (!tokenAddress && !lpAddress)) return;
+  if (pool.holderFactsStatus === "known") {
+    updateSelectedHolderFacts(pool);
+    updateLpLockSummary(lpLockSummaryFromPool(pool));
+    return;
+  }
+
+  pool.holderFactsStatus = "loading";
+  updateSelectedHolderFacts(pool);
+  const selectedPoolId = pool.id;
+
+  try {
+    const [tokenResult, lpResult] = await Promise.allSettled([
+      tokenAddress ? fetchTokenInfo(tokenAddress) : Promise.resolve(null),
+      lpAddress ? fetchTokenInfo(lpAddress) : Promise.resolve(null),
+    ]);
+    const tokenInfo = tokenResult.status === "fulfilled" ? tokenResult.value : null;
+    const lpInfo = lpResult.status === "fulfilled" ? lpResult.value : null;
+    applyPairHolderFacts(pool, tokenInfo, lpInfo);
+    pool.holderFactsStatus = tokenInfo || lpInfo ? "known" : "error";
+  } catch (error) {
+    pool.holderFactsStatus = "error";
+    console.warn(error);
+  }
+
+  const activePool = selectedPool();
+  if (activePool?.id === selectedPoolId) {
+    updateSelectedMetadata();
+    updateLpLockSummary(lpLockSummaryFromPool(activePool));
+  }
 }
 
 async function loadBlockscoutAddresses(pools) {
@@ -878,7 +987,11 @@ async function loadDeadLpSummaries(pools) {
     }
   }
 
-  if (changed) renderPools();
+  if (changed) {
+    renderPools();
+    updateSelectedMetadata();
+    updateLpLockSummary(lpLockSummaryFromPool(selectedPool()));
+  }
 }
 
 function timeframeParams() {
@@ -1322,7 +1435,7 @@ async function loadTrades(pool, options = {}) {
     const liveTransactions = buildTransactions(pool, trades, transfers, lpTransfers);
     const liveSummary = summarizeLpLocks(pool, lpTransfers, lpHolders);
     const mergedSummary = mergeLpLockSummaries(liveSummary, cachedTape?.lpLockSummary);
-    applyDeadLpSummary(pool, mergedSummary);
+    if (applyDeadLpSummary(pool, mergedSummary)) updateSelectedMetadata();
     state.transactions = mergeTransactions(liveTransactions, cachedTape?.transactions || []);
     updateFirstIndexedAge(pool);
     updateLpLockSummary(mergedSummary);
@@ -1362,7 +1475,7 @@ async function loadHistoricalPoolTape(pool, seedSummary = null) {
     state.transactions = mergeTransactions(state.transactions, historicalTransactions);
     updateFirstIndexedAge(pool);
     const mergedSummary = mergeLpLockSummaries(seedSummary, historicalSummary);
-    applyDeadLpSummary(pool, mergedSummary);
+    if (applyDeadLpSummary(pool, mergedSummary)) updateSelectedMetadata();
     updateLpLockSummary(mergedSummary);
     renderTransactions();
   } finally {
@@ -1523,6 +1636,9 @@ function summarizeLpLocks(pool, lpTransfers, lpHolders) {
     symbol,
     deadBalance,
     lockRows: deadTransfers.length,
+    holderCount: pool.lpHolderCount,
+    totalSupply: pool.lpTotalSupply,
+    deadPercent: deadLpPercent(deadBalance, pool.lpTotalSupply),
   };
 }
 
@@ -1557,8 +1673,13 @@ function mergeLpLockSummaries(...summaries) {
   const symbol = valid.find((summary) => summary.symbol)?.symbol || "LP";
   const deadBalance = Math.max(...valid.map((summary) => Number(summary.deadBalance) || 0));
   const lockRows = Math.max(...valid.map((summary) => Number(summary.lockRows) || 0));
+  const holderCount = maxFinite(valid.map((summary) => summary.holderCount));
+  const totalSupply = maxFinite(valid.map((summary) => summary.totalSupply));
+  const suppliedPercent = maxFinite(valid.map((summary) => summary.deadPercent));
+  const computedPercent = deadLpPercent(deadBalance, totalSupply);
+  const share = computedPercent ?? suppliedPercent;
   if (!deadBalance && !lockRows) return null;
-  return { symbol, deadBalance, lockRows };
+  return { symbol, deadBalance, lockRows, holderCount, totalSupply, deadPercent: share };
 }
 
 function apiDeadLpToSummary(summary) {
@@ -1567,35 +1688,81 @@ function apiDeadLpToSummary(summary) {
     symbol: summary.symbol || "LP",
     deadBalance: Number(summary.deadBalance),
     lockRows: Number(summary.lockRows || 0),
+    holderCount: finiteNumber(summary.holderCount),
+    totalSupply: finiteNumber(summary.totalSupply),
+    deadPercent: finiteNumber(summary.deadPercent),
   };
 }
 
 function applyDeadLpSummary(pool, summary) {
   if (!pool) return false;
+  const before = {
+    status: pool.deadLpStatus,
+    amount: pool.deadLpAmount,
+    symbol: pool.deadLpSymbol,
+    rows: pool.deadLpLockRows,
+    percent: pool.deadLpPercent,
+    holders: pool.lpHolderCount,
+    supply: pool.lpTotalSupply,
+  };
+
   if (!summary) {
-    if (pool.deadLpStatus !== "none") {
-      pool.deadLpStatus = "none";
-      pool.deadLpAmount = 0;
-      pool.deadLpSymbol = "LP";
-      pool.deadLpLockRows = 0;
-      return true;
-    }
-    return false;
+    pool.deadLpStatus = "none";
+    pool.deadLpAmount = 0;
+    pool.deadLpSymbol = "LP";
+    pool.deadLpLockRows = 0;
+    pool.deadLpPercent = deadLpPercent(0, pool.lpTotalSupply);
+    return didDeadLpChange(pool, before);
   }
 
   const amount = Number(summary.deadBalance) || 0;
   const rows = Number(summary.lockRows || 0);
-  const changed =
-    pool.deadLpStatus !== "locked" ||
-    pool.deadLpAmount !== amount ||
-    pool.deadLpSymbol !== (summary.symbol || "LP") ||
-    pool.deadLpLockRows !== rows;
+  const holderCount = finiteNumber(summary.holderCount);
+  const totalSupply = finiteNumber(summary.totalSupply);
 
   pool.deadLpStatus = amount > 0 || rows > 0 ? "locked" : "none";
   pool.deadLpAmount = amount;
   pool.deadLpSymbol = summary.symbol || "LP";
   pool.deadLpLockRows = rows;
-  return changed;
+  if (holderCount !== null) pool.lpHolderCount = holderCount;
+  if (totalSupply !== null) pool.lpTotalSupply = totalSupply;
+  pool.deadLpPercent = deadLpPercent(amount, pool.lpTotalSupply) ?? finiteNumber(summary.deadPercent);
+  return didDeadLpChange(pool, before);
+}
+
+function didDeadLpChange(pool, before) {
+  return (
+    before.status !== pool.deadLpStatus ||
+    before.amount !== pool.deadLpAmount ||
+    before.symbol !== pool.deadLpSymbol ||
+    before.rows !== pool.deadLpLockRows ||
+    before.percent !== pool.deadLpPercent ||
+    before.holders !== pool.lpHolderCount ||
+    before.supply !== pool.lpTotalSupply
+  );
+}
+
+function lpLockSummaryFromPool(pool) {
+  if (!pool || pool.deadLpStatus !== "locked") return null;
+  return {
+    symbol: pool.deadLpSymbol || "LP",
+    deadBalance: pool.deadLpAmount,
+    lockRows: pool.deadLpLockRows,
+    holderCount: pool.lpHolderCount,
+    totalSupply: pool.lpTotalSupply,
+    deadPercent: pool.deadLpPercent,
+  };
+}
+
+function finiteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function maxFinite(values) {
+  const finite = values.map(finiteNumber).filter((value) => value !== null);
+  return finite.length ? Math.max(...finite) : null;
 }
 
 function lpTokenSymbol(transfers) {
@@ -1612,12 +1779,17 @@ function updateLpLockSummary(summary) {
     els.lpBurnSummary.hidden = true;
     els.lpDeadBalance.textContent = "--";
     els.lpBurnRows.textContent = "--";
+    els.lpDeadPercent.textContent = "--";
     return;
   }
 
   els.lpBurnSummary.hidden = false;
+  const pool = selectedPool();
+  const totalSupply = finiteNumber(summary.totalSupply) ?? pool?.lpTotalSupply ?? null;
+  const share = deadLpPercent(summary.deadBalance, totalSupply) ?? finiteNumber(summary.deadPercent);
   els.lpDeadBalance.textContent = lpAmountText(summary.deadBalance, summary.symbol);
   els.lpBurnRows.textContent = compactNumber(summary.lockRows);
+  els.lpDeadPercent.textContent = deadLpPercentText(share);
 }
 
 function lpAmountText(value, symbol) {
