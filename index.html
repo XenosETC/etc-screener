@@ -8,28 +8,40 @@
   </head>
   <body>
     <div class="app">
-      <header class="topbar">
-        <a class="brand" href="/" aria-label="ETCScreener home">
-          <span class="brand-mark"><img src="/etc-shard.svg" alt="" /></span>
-          <strong><span>ETC</span>Screener</strong>
-        </a>
-
-        <nav class="nav-tabs" aria-label="Primary">
-          <button class="active" type="button" id="navPools">Pairs</button>
-          <a href="https://etc.blockscout.com/pools" target="_blank" rel="noreferrer">Blockscout</a>
-        </nav>
-
-        <div class="search-wrap">
-          <input id="searchInput" type="search" placeholder="Search pair, DEX, or contract" />
+      <aside class="terminal-rail" aria-label="ETCScreener rail">
+        <a class="rail-logo" href="/" aria-label="ETCScreener home"><img src="/etc-shard.svg" alt="" /></a>
+        <div class="rail-stack" aria-hidden="true">
+          <span class="rail-dot active"></span>
+          <span class="rail-dot"></span>
+          <span class="rail-dot"></span>
+          <span class="rail-dot"></span>
         </div>
+        <span class="rail-status" aria-hidden="true"></span>
+      </aside>
 
-        <div class="network-strip">
-          <span id="dataStatus">Loading pools...</span>
-          <span id="etcPrice">ETC --</span>
-        </div>
-      </header>
+      <div class="app-main">
+        <header class="topbar">
+          <a class="brand" href="/" aria-label="ETCScreener home">
+            <span class="brand-mark"><img src="/etc-shard.svg" alt="" /></span>
+            <strong><span>ETC</span>Screener</strong>
+          </a>
 
-      <main>
+          <nav class="nav-tabs" aria-label="Primary">
+            <button class="active" type="button" id="navPools">Pairs</button>
+            <a href="https://etc.blockscout.com/pools" target="_blank" rel="noreferrer">Blockscout</a>
+          </nav>
+
+          <div class="search-wrap">
+            <input id="searchInput" type="search" placeholder="Search pair, DEX, or contract" />
+          </div>
+
+          <div class="network-strip">
+            <span id="dataStatus">Loading pools...</span>
+            <span id="etcPrice">ETC --</span>
+          </div>
+        </header>
+
+        <main>
         <section class="view active" id="poolsView">
           <div class="page-head">
             <div>
@@ -186,16 +198,6 @@
                 </div>
               </section>
 
-              <div class="info-list">
-                <div><span>Fee</span><strong id="selectedFee">--</strong></div>
-                <div><span>Market cap</span><strong id="selectedMarketCap">--</strong></div>
-                <div><span>Chart volume</span><strong id="selectedVolume">--</strong></div>
-                <div><span>ETC reference</span><strong id="selectedWetcUsd">--</strong></div>
-                <div><span>Blockscout transfers</span><strong id="selectedTransfers">--</strong></div>
-                <div><span>Contract status</span><strong id="selectedVerified">--</strong></div>
-                <div><span>Pool</span><strong id="selectedPoolAddress">--</strong></div>
-              </div>
-
               <section class="activity-panel transaction-panel">
                 <div class="panel-title">
                   <div>
@@ -225,11 +227,22 @@
                 <div class="tx-table" id="txRows"></div>
                 <div class="activity-empty" id="txEmpty">Transactions appear here when market activity is available.</div>
               </section>
+
+              <div class="info-list">
+                <div><span>Fee</span><strong id="selectedFee">--</strong></div>
+                <div><span>Market cap</span><strong id="selectedMarketCap">--</strong></div>
+                <div><span>Chart volume</span><strong id="selectedVolume">--</strong></div>
+                <div><span>ETC reference</span><strong id="selectedWetcUsd">--</strong></div>
+                <div><span>Blockscout transfers</span><strong id="selectedTransfers">--</strong></div>
+                <div><span>Contract status</span><strong id="selectedVerified">--</strong></div>
+                <div><span>Pool</span><strong id="selectedPoolAddress">--</strong></div>
+              </div>
             </aside>
           </div>
         </section>
 
-      </main>
+        </main>
+      </div>
     </div>
 
     <script type="module" src="/src/app.js"></script>
