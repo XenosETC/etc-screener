@@ -15,6 +15,8 @@ const POOL_TAPE_CACHE_VERSION = 5;
 const POOL_TAPE_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const HISTORICAL_POOL_TRANSFER_PAGES = 24;
 const HISTORICAL_LP_TRANSFER_PAGES = 80;
+const ETC_CHART_FRAME = { unit: "day", aggregate: 1, label: "1D", limit: 180 };
+const STABLE_SYMBOLS = new Set(["USC", "USDT", "USDC", "USD"]);
 
 const state = {
   pools: [],
@@ -50,11 +52,18 @@ const state = {
   tokenAgeRequests: new Set(),
   tokenInfoCache: new Map(),
   tokenInfoRequests: new Map(),
+  etcChartRequest: 0,
   chart: {
     api: null,
     candles: null,
     volume: null,
     resizeObserver: null,
+  },
+  marketChart: {
+    api: null,
+    candles: null,
+    loadedPoolId: null,
+    loadingPoolId: null,
   },
 };
 
@@ -76,6 +85,11 @@ const els = {
   contextVolumeTotal: document.querySelector("#contextVolumeTotal"),
   dexLiquidityRows: document.querySelector("#dexLiquidityRows"),
   dexVolumeRows: document.querySelector("#dexVolumeRows"),
+  etcMiniChart: document.querySelector("#etcMiniChart"),
+  etcChartPrice: document.querySelector("#etcChartPrice"),
+  etcChartChange: document.querySelector("#etcChartChange"),
+  etcChartCoverage: document.querySelector("#etcChartCoverage"),
+  etcChartLink: document.querySelector("#etcChartLink"),
   searchInput: document.querySelector("#searchInput"),
   sortSelect: document.querySelector("#sortSelect"),
   marketTabs: document.querySelector(".market-tabs"),
@@ -461,6 +475,19 @@ function groupDexMetrics(pools = state.pools) {
   return [...groups.values()];
 }
 
+function rankedEtcPricePools() {
+  const byLiquidity = (a, b) => b.liquidity - a.liquidity;
+  const stableWetcPools = state.pools
+    .filter((pool) => pool.baseSymbol?.toUpperCase() === "WETC" && STABLE_SYMBOLS.has(pool.quoteSymbol?.toUpperCase()))
+    .sort(byLiquidity);
+  const wetcBasePools = state.pools.filter((pool) => pool.baseSymbol?.toUpperCase() === "WETC").sort(byLiquidity);
+  const byId = new Map();
+  [...stableWetcPools, ...wetcBasePools].forEach((pool) => {
+    if (pool?.id && !byId.has(pool.id)) byId.set(pool.id, pool);
+  });
+  return [...byId.values()];
+}
+
 function renderContextRows(rows, metric) {
   const max = Math.max(...rows.map((row) => row[metric]), 0);
   if (!rows.length) return `<div class="context-empty">No pool data yet.</div>`;
@@ -562,6 +589,7 @@ function renderOverview() {
   els.visiblePoolCount.textContent = visiblePools().length || "--";
   els.deadLpPoolCount.textContent = deadLpPoolCountText();
   renderMarketContext();
+  loadEtcPriceChart();
 }
 
 function renderMarketContext() {
@@ -577,6 +605,135 @@ function renderMarketContext() {
   els.contextVolumeTotal.textContent = moneyZero(volume, true);
   els.dexLiquidityRows.innerHTML = renderContextRows(liquidityRows, "liquidity");
   els.dexVolumeRows.innerHTML = renderContextRows(volumeRows, "volume");
+}
+
+async function loadEtcPriceChart() {
+  const candidates = rankedEtcPricePools();
+  if (!candidates.length || !els.etcMiniChart) {
+    els.etcChartPrice.textContent = state.wetcUsd ? money(state.wetcUsd) : "--";
+    els.etcChartChange.textContent = "Chart unavailable";
+    els.etcChartChange.className = "";
+    return;
+  }
+  if (state.marketChart.loadedPoolId && candidates.some((pool) => pool.id === state.marketChart.loadedPoolId)) return;
+  if (state.marketChart.loadingPoolId) return;
+
+  const requestId = ++state.etcChartRequest;
+  state.marketChart.loadingPoolId = "etc-price";
+  els.etcChartPrice.textContent = state.wetcUsd ? money(state.wetcUsd) : "--";
+  els.etcChartChange.textContent = "Loading";
+  els.etcChartChange.className = "";
+  els.etcChartCoverage.textContent = "Coverage --";
+  els.etcChartLink.href = candidates[0].geckoUrl || "https://www.geckoterminal.com/ethereum_classic/pools";
+
+  let lastError = null;
+  try {
+    for (const pool of candidates.slice(0, 6)) {
+      try {
+        const payload = await fetchCandles(pool.id, ETC_CHART_FRAME);
+        if (requestId !== state.etcChartRequest) return;
+        const candles = candlesFromPayload(payload);
+        if (!candles.length) continue;
+        renderEtcPriceChart(candles, pool);
+        state.marketChart.loadedPoolId = pool.id;
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error("No ETC chart candles");
+  } catch (error) {
+    if (requestId !== state.etcChartRequest) return;
+    els.etcChartChange.textContent = "Chart unavailable";
+    els.etcChartChange.className = "negative";
+    console.warn(error);
+  } finally {
+    state.marketChart.loadingPoolId = null;
+  }
+}
+
+function ensureMarketChart() {
+  if (state.marketChart.api || !els.etcMiniChart) return;
+
+  const chart = createChart(els.etcMiniChart, {
+    autoSize: true,
+    layout: {
+      background: { type: ColorType.Solid, color: "#070b10" },
+      textColor: "#8f9dae",
+      fontFamily: "Inter, system-ui, sans-serif",
+    },
+    grid: {
+      vertLines: { color: "rgba(125, 145, 165, 0.08)" },
+      horzLines: { color: "rgba(125, 145, 165, 0.09)" },
+    },
+    crosshair: {
+      mode: CrosshairMode.Normal,
+      vertLine: { color: "rgba(50, 229, 139, 0.42)", labelVisible: false },
+      horzLine: { color: "rgba(50, 229, 139, 0.42)", labelBackgroundColor: "#0e1f18" },
+    },
+    rightPriceScale: {
+      borderVisible: false,
+      scaleMargins: { top: 0.12, bottom: 0.12 },
+    },
+    timeScale: {
+      borderVisible: false,
+      rightOffset: 4,
+      barSpacing: 6,
+      timeVisible: false,
+      secondsVisible: false,
+    },
+    localization: {
+      priceFormatter: (price) => money(price),
+    },
+    handleScale: false,
+    handleScroll: false,
+  });
+
+  const candles = chart.addSeries(CandlestickSeries, {
+    upColor: "#20e28a",
+    downColor: "#ff4f5e",
+    borderUpColor: "#20e28a",
+    borderDownColor: "#ff4f5e",
+    wickUpColor: "#20e28a",
+    wickDownColor: "#ff4f5e",
+    priceLineColor: "#20e28a",
+    priceLineWidth: 1,
+    lastValueVisible: true,
+  });
+
+  state.marketChart.api = chart;
+  state.marketChart.candles = candles;
+}
+
+function renderEtcPriceChart(candles, pool) {
+  const cleanCandles = normalizeCandles(candles);
+  if (!cleanCandles.length) {
+    els.etcChartChange.textContent = "No candles";
+    els.etcChartChange.className = "";
+    return;
+  }
+
+  ensureMarketChart();
+  const first = cleanCandles[0];
+  const last = cleanCandles[cleanCandles.length - 1];
+  const firstDate = new Date(first.time * 1000);
+  const lastDate = new Date(last.time * 1000);
+  const change = ((last.close - first.open) / (first.open || 1)) * 100;
+  const candleData = cleanCandles.map((candle) => ({
+    time: candle.time,
+    open: candle.open,
+    high: candle.high,
+    low: candle.low,
+    close: candle.close,
+  }));
+
+  state.marketChart.candles?.setData(candleData);
+  state.marketChart.api?.timeScale().fitContent();
+  els.etcChartPrice.textContent = state.wetcUsd ? money(state.wetcUsd) : money(last.close);
+  els.etcChartChange.textContent = `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`;
+  els.etcChartChange.className = change >= 0 ? "positive" : "negative";
+  els.etcChartCoverage.textContent = `${firstDate.toLocaleDateString()} - ${lastDate.toLocaleDateString()}`;
+  els.etcChartLink.href = pool.geckoUrl || "https://www.geckoterminal.com/ethereum_classic/pools";
 }
 
 function setNavState(name) {
@@ -1274,6 +1431,19 @@ async function fetchPoolTapeIndex(pool) {
   return response.json();
 }
 
+function candlesFromPayload(payload) {
+  return normalizeCandles(
+    (payload.data?.attributes?.ohlcv_list || []).map(([time, open, high, low, close, volume]) => ({
+      time,
+      open: Number(open),
+      high: Number(high),
+      low: Number(low),
+      close: Number(close),
+      volume: Number(volume),
+    })),
+  );
+}
+
 async function loadCandles(pool) {
   if (!pool) {
     els.chartLoading.hidden = false;
@@ -1303,17 +1473,7 @@ async function loadCandles(pool) {
       payload = await fetchCandles(pool.id, activeFrame);
     }
     if (requestId !== state.candleRequest) return;
-    const candles = normalizeCandles(
-      (payload.data?.attributes?.ohlcv_list || [])
-      .map(([time, open, high, low, close, volume]) => ({
-        time,
-        open: Number(open),
-        high: Number(high),
-        low: Number(low),
-        close: Number(close),
-        volume: Number(volume),
-      })),
-    );
+    const candles = candlesFromPayload(payload);
     writeCachedCandles(pool.id, activeFrame, candles);
     renderCandles(candles, pool, activeFrame, "GeckoTerminal OHLCV");
   } catch (error) {
@@ -2124,6 +2284,7 @@ async function loadStats() {
     const stats = await response.json();
     state.wetcUsd = Number(stats.coin_price || 0) || null;
     els.etcPrice.textContent = `ETC ${money(state.wetcUsd)}`;
+    if (state.wetcUsd) els.etcChartPrice.textContent = money(state.wetcUsd);
     const pool = selectedPool();
     if (pool) els.selectedWetcUsd.textContent = money(state.wetcUsd);
     syncConverter("state");
