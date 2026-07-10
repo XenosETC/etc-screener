@@ -523,13 +523,13 @@ h2 {
 .pool-header,
 .pool-row {
   display: grid;
-  grid-template-columns: minmax(164px, 188px) minmax(72px, 86px) 30px minmax(40px, 0.46fr) minmax(54px, 0.52fr) minmax(58px, 0.56fr) minmax(72px, 0.62fr) 44px 44px;
-  gap: 5px;
+  grid-template-columns: minmax(144px, 164px) 84px 42px minmax(38px, 0.3fr) minmax(64px, 0.4fr) minmax(64px, 0.42fr) minmax(70px, 0.48fr) 64px 52px;
+  gap: 3px;
   align-items: center;
   width: 100%;
-  min-width: 650px;
+  min-width: 660px;
   border-bottom: 1px solid var(--line-soft);
-  padding: 0 11px;
+  padding: 0 7px;
   text-align: left;
 }
 
@@ -540,7 +540,7 @@ h2 {
   min-height: 39px;
   background: rgba(14, 21, 29, 0.98);
   color: var(--muted);
-  font-size: 0.64rem;
+  font-size: 0.6rem;
   font-weight: 900;
   text-transform: uppercase;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035);
@@ -552,6 +552,10 @@ h2 {
   color: var(--text);
   text-decoration: none;
   background: transparent;
+}
+
+.pool-row > span:nth-child(n + 2) {
+  font-size: 0.86rem;
 }
 
 .pool-row::before {
@@ -585,6 +589,10 @@ h2 {
   text-align: right;
 }
 
+.pool-header > span:nth-child(4) {
+  font-size: 0.54rem;
+}
+
 .pool-header > span,
 .pool-row > span {
   min-width: 0;
@@ -595,7 +603,7 @@ h2 {
 
 .pair-cell {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
   min-width: 0;
 }
@@ -671,8 +679,8 @@ h2 {
   overflow: hidden;
   border: 1px solid rgba(150, 163, 180, 0.12);
   border-radius: 999px;
-  padding: 3px 7px;
-  font-size: 0.65rem;
+  padding: 3px 6px;
+  font-size: 0.61rem;
   font-weight: 900;
   line-height: 1.15;
   text-align: center;
