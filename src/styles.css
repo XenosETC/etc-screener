@@ -480,7 +480,7 @@ h2 {
 
 .screener-layout {
   display: grid;
-  grid-template-columns: minmax(700px, 1fr) minmax(380px, 430px);
+  grid-template-columns: minmax(620px, 1fr) minmax(440px, 520px);
   gap: 9px;
   align-items: start;
 }
@@ -523,11 +523,11 @@ h2 {
 .pool-header,
 .pool-row {
   display: grid;
-  grid-template-columns: minmax(170px, 200px) minmax(78px, 96px) 34px minmax(46px, 0.54fr) minmax(62px, 0.6fr) minmax(70px, 0.62fr) minmax(78px, 0.66fr) 52px 50px;
+  grid-template-columns: minmax(164px, 188px) minmax(72px, 86px) 30px minmax(40px, 0.46fr) minmax(54px, 0.52fr) minmax(58px, 0.56fr) minmax(72px, 0.62fr) 44px 44px;
   gap: 5px;
   align-items: center;
   width: 100%;
-  min-width: 740px;
+  min-width: 650px;
   border-bottom: 1px solid var(--line-soft);
   padding: 0 11px;
   text-align: left;
@@ -581,7 +581,7 @@ h2 {
 
 .pool-header > span:nth-child(n + 3),
 .pool-row > span:nth-child(n + 3) {
-  justify-self: end;
+  justify-self: stretch;
   text-align: right;
 }
 
